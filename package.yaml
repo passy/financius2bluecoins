@@ -35,7 +35,10 @@ dependencies:
   - text
   - bytestring
   - containers
+  - unordered-containers
   - optparse-generic
+  - vector
+  - monad-logger
 
 executables:
   financius2bluecoin:
