@@ -1,0 +1,43 @@
+name:                financius2bluecoin
+synopsis:            A hacky one-way importer from Financius into Bluecoin
+version:             0.1.0.0
+homepage:            https://github.com/passy/financius2bluecoin#readme
+license:             BSD3
+author:              Pascal Hartig
+maintainer:          phartig@rdrei.net
+copyright:           2017 Pascal Hartig
+category:            Web
+
+extra-source-files:
+  - README.md
+
+ghc-options:
+  - -Wall
+  - -Wcompat
+  - -Widentities
+  - -Wincomplete-record-updates
+  - -Wincomplete-uni-patterns
+  - -Wmissing-exported-signatures
+  - -Wmissing-local-signatures
+  - -Wmonomorphism-restriction
+
+default-extensions:
+  - NoImplicitPrelude
+  - OverloadedStrings
+
+dependencies:
+  - base >= 4.7 && < 5
+  - protolude >= 0.1.10 && < 0.2
+  - lens
+  - aeson
+  - lens-aeson
+  - sqlite-simple
+  - text
+  - bytestring
+  - containers
+  - optparse-generic
+
+executables:
+  financius2bluecoin:
+    source-dirs:      app
+    main:             Main.hs
