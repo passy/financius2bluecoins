@@ -37,6 +37,12 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxNote :: Text
   } deriving (Eq, Show, Generic)
 
+data BluecoinTransaction = BluecoinTransaction
+  { btxItemId :: Integer
+  , btxAmount :: Integer
+  , btxNotes :: Text
+  } deriving (Eq, Show)
+
 instance Aeson.FromJSON FinanciusTransaction where
   parseJSON = Aeson.withObject "transaction" $ \o ->
     FinanciusTransaction
