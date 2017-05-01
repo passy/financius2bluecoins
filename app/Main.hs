@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -29,7 +30,7 @@ data Args = Args
   , mappingFile :: FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
-type AccountMapping = HMS.HashMap Text Text
+type AccountMapping = HMS.HashMap Text Integer
 
 data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
@@ -38,13 +39,27 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAccountId :: Integer
   } deriving (Eq, Show)
 
+data FinanciusAccount = FinanciusAccount
+  { faccId :: Text
+  , faccCurrencyCode :: Text
+  } deriving (Eq, Show)
+
+instance Aeson.FromJSON FinanciusAccount where
+  parseJSON = Aeson.withObject "account" $ \o ->
+    FinanciusAccount
+      <$> o .: "id"
+      <*> o .: "currency_code"
+
+fToBAccount :: FinanciusAccount -> AccountMapping -> Maybe Integer
+fToBAccount FinanciusAccount{faccId} = HMS.lookup faccId
+
 data FinanciusTransaction = FinanciusTransaction
   { ftxId :: Text
   , ftxAccountFromId :: Maybe Text
   , ftxAccountToId :: Maybe Text
   , ftxNote :: Text
   , ftxAmount :: Integer
-  } deriving (Eq, Show, Generic)
+  } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
   parseJSON = Aeson.withObject "transaction" $ \o ->
@@ -59,12 +74,12 @@ data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
 
 instance Enum TransactionType where
-  fromEnum Transfer = 1
-  fromEnum Income = 2
+  fromEnum Transfer = 5
+  fromEnum Income = 4
   fromEnum Expense = 3
 
-  toEnum 1 = Transfer
-  toEnum 2 = Income
+  toEnum 5 = Transfer
+  toEnum 4 = Income
   toEnum 3 = Expense
   toEnum i = error $ "Invalid transaction type " <> show i
 
@@ -142,18 +157,24 @@ writeBluecoinTransaction
   -> io ()
 writeBluecoinTransaction conn BluecoinTransaction{..} = do
   let sql :: SQL.Query =
-        "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags)\
+        "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount)\
         \ VALUES\
-        \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags)"
+        \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount)"
   liftIO $ SQL.executeNamed conn sql
     [ ":itemID" := btxItemId
     , ":amount" := btxAmount
     , ":notes" := btxNotes
     , ":accountID" := btxAccountId
+    , ":hasPhoto" := (0 :: Int)
+    , ":labelCount" := (0 :: Int)
     -- TODO
     , ":transactionCurrency" := ("GBP" :: Text)
     , ":conversionRateNew" := (1.0 :: Double)
     , ":transactionTypeID" := (fromEnum Expense)
     , ":categoryID" := (2 :: Int)
     , ":tags" := ("temptags" :: Text)
+    , ":accountReference" := (3 :: Int)
+    , ":accountPairID" := (123345 :: Int)
+    , ":uidPairID" := (12355 :: Int)
+    , ":deletedTransaction" := (6 :: Int)
     ]
