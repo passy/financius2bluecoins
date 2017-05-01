@@ -112,6 +112,10 @@ getOrCreateItem conn name = do
     (\c -> SQL.query c "SELECT itemTableId FROM ITEMTABLE WHERE itemName = ?" (SQL.Only name))
     (\c -> SQL.execute c "INSERT INTO ITEMTABLE (itemName) VALUES (?)" (SQL.Only name))
 
+toFinanciusAccountLookupMap :: V.Vector FinanciusAccount -> HMS.HashMap Text FinanciusAccount
+toFinanciusAccountLookupMap =
+  HMS.fromList . V.toList . V.map (\acc@FinanciusAccount{..} -> (faccId, acc))
+
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
@@ -131,24 +135,29 @@ main = L.runStderrLoggingT $ do
   --     return ()
   --   Just a -> doWrite a
 
+  let fAccounts :: Maybe (V.Vector FinanciusAccount) =
+        _todoHole $ financiusJson ^? key "accounts" . _Array
+
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
-  forM_ transactions $ \tx -> do
-    case Aeson.fromJSON tx of
-      Aeson.Success ftx -> insertRow conn ftx
-      Aeson.Error e ->
-        $(L.logError) $ "Couldn't parse transaction: " <> show e
+
+  let btxs :: V.Vector BluecoinTransaction = forM transactions $ \tx -> do
+      case Aeson.fromJSON tx of
+        Aeson.Success ftx -> Just <$> mkBluecoinTransaction conn ftx
+        Aeson.Error e -> do
+          $(L.logError) $ "Couldn't parse transaction: " <> show e
+          return Nothing
 
   $(L.logInfo) "Done."
 
-insertRow :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> FinanciusTransaction -> io ()
-insertRow conn ftx = do
+mkBluecoinTransaction :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> FinanciusTransaction -> io BluecoinTransaction
+mkBluecoinTransaction conn ftx = do
   let itemName = if T.null (ftxNote ftx) then "(Unnamed transaction)" else ftxNote ftx
   btxItemId <- getOrCreateItem conn itemName
   let btxAmount = ftxAmount ftx * 1000
   let btxNotes = "passyImportId:" <> ftxId ftx
   -- TODO
   let btxAccountId :: Integer = 2
-  writeBluecoinTransaction conn BluecoinTransaction{..}
+  return BluecoinTransaction{..}
 
 writeBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
