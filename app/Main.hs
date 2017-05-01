@@ -116,6 +116,11 @@ toFinanciusAccountLookupMap :: V.Vector FinanciusAccount -> HMS.HashMap Text Fin
 toFinanciusAccountLookupMap =
   HMS.fromList . V.toList . V.map (\acc@FinanciusAccount{..} -> (faccId, acc))
 
+vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
+vecCatMaybes = V.concatMap f
+  where f (Just a) = V.singleton a
+        f Nothing = V.empty
+
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
@@ -140,12 +145,14 @@ main = L.runStderrLoggingT $ do
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
-  let btxs :: V.Vector BluecoinTransaction = forM transactions $ \tx -> do
+  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- forM transactions $ \tx -> do
       case Aeson.fromJSON tx of
         Aeson.Success ftx -> Just <$> mkBluecoinTransaction conn ftx
         Aeson.Error e -> do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
+
+  _ <- mapM (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
 
