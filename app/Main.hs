@@ -140,8 +140,9 @@ main = L.runStderrLoggingT $ do
   --     return ()
   --   Just a -> doWrite a
 
-  let fAccounts :: Maybe (V.Vector FinanciusAccount) =
-        _todoHole $ financiusJson ^? key "accounts" . _Array
+  -- I'm sure there's a better way for this. I must be ignoring some useful law here.
+  let fAccounts :: Maybe (V.Vector FinanciusAccount)
+      fAccounts = sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array))
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
@@ -155,6 +156,11 @@ main = L.runStderrLoggingT $ do
   _ <- mapM (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
+
+decodeValueEither :: (Aeson.FromJSON a) => Aeson.Value -> Either Text a
+decodeValueEither v = case Aeson.fromJSON v of
+  Aeson.Success res -> pure res
+  Aeson.Error e -> Left $ T.pack e
 
 mkBluecoinTransaction :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> FinanciusTransaction -> io BluecoinTransaction
 mkBluecoinTransaction conn ftx = do
