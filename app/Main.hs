@@ -1,5 +1,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -39,6 +40,11 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAccountId :: Integer
   } deriving (Eq, Show)
 
+data BluecoinAccount = BluecoinAccount
+  { baccId :: RowId
+  , baccCurrencyCode :: Text
+  } deriving (Eq, Show)
+
 data FinanciusAccount = FinanciusAccount
   { faccId :: Text
   , faccCurrencyCode :: Text
@@ -49,9 +55,6 @@ instance Aeson.FromJSON FinanciusAccount where
     FinanciusAccount
       <$> o .: "id"
       <*> o .: "currency_code"
-
-fToBAccount :: FinanciusAccount -> AccountMapping -> Maybe Integer
-fToBAccount FinanciusAccount{faccId} = HMS.lookup faccId
 
 data FinanciusTransaction = FinanciusTransaction
   { ftxId :: Text
@@ -129,7 +132,7 @@ main = L.runStderrLoggingT $ do
   mappingJson <- liftIO . readFile $ mappingFile args
   conn <- liftIO . SQL.open $ bluecoinFile args
 
-  let accountMapping :: Either Text (HMS.HashMap Text Text) =
+  let accountMapping :: AccountMapping =
         case first T.pack . Aeson.eitherDecodeStrict $ TE.encodeUtf8 mappingJson of
           Left e -> error $ "mapping parsing failed: " <> e
           Right a -> a
@@ -141,8 +144,9 @@ main = L.runStderrLoggingT $ do
   --   Just a -> doWrite a
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
-  let fAccounts :: Maybe (V.Vector FinanciusAccount)
-      fAccounts = sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array))
+  let fAccounts :: Maybe (V.Vector FinanciusAccount) =
+        sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array))
+  let mergedAccounts = mergeAccounts accountMapping <$> fAccounts
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
@@ -156,6 +160,13 @@ main = L.runStderrLoggingT $ do
   _ <- mapM (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
+
+mergeAccounts :: AccountMapping -> V.Vector FinanciusAccount -> HMS.HashMap Text BluecoinAccount
+mergeAccounts accountMapping fAccounts =
+  -- This results in O(n^2) lookups, but the number of accounts is low.
+  let fAccounts' :: [(Text, FinanciusAccount)] =
+        V.toList $ V.map (\facc@FinanciusAccount{faccId} -> (faccId, facc))
+  in undefined
 
 decodeValueEither :: (Aeson.FromJSON a) => Aeson.Value -> Either Text a
 decodeValueEither v = case Aeson.fromJSON v of
