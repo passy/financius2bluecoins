@@ -38,7 +38,7 @@ data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
   , btxAmount :: Integer
   , btxNotes :: Text
-  , btxAccountId :: Integer
+  , btxAccount :: BluecoinAccount
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
@@ -151,7 +151,7 @@ main = L.runStderrLoggingT $ do
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- forM transactions $ \tx -> do
       case Aeson.fromJSON tx of
-        Aeson.Success ftx -> Just <$> mkBluecoinTransaction conn mergedAccounts ftx
+        Aeson.Success ftx -> mkBluecoinTransaction conn mergedAccounts ftx
         Aeson.Error e -> do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
@@ -185,7 +185,7 @@ mkBluecoinTransaction
   => SQL.Connection
   -> HMS.HashMap Text BluecoinAccount
   -> FinanciusTransaction
-  -> io BluecoinTransaction
+  -> io (Maybe BluecoinTransaction)
 mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
   let itemName =
         if T.null ftxNote
@@ -194,9 +194,11 @@ mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
   btxItemId <- getOrCreateItem conn itemName
   let btxAmount = ftxAmount * 1000
   let btxNotes = "passyImportId:" <> ftxId
-  -- TODO
-  let btxAccountId = 2
-  return BluecoinTransaction {..}
+
+  -- TODO: Investigate out how ToId is used.
+  case (flip HMS.lookup) baccs =<< ftxAccountFromId of
+        Nothing -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
+        Just btxAccount -> pure $ Just BluecoinTransaction{..}
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount{..} = do
@@ -218,7 +220,7 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     [ ":itemID" := btxItemId
     , ":amount" := btxAmount
     , ":notes" := btxNotes
-    , ":accountID" := btxAccountId
+    , ":accountID" := baccId btxAccount
     , ":hasPhoto" := (0 :: Int)
     , ":labelCount" := (0 :: Int)
     -- TODO
