@@ -144,9 +144,11 @@ main = L.runStderrLoggingT $ do
   --   Just a -> doWrite a
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
-  let fAccounts :: Maybe (V.Vector FinanciusAccount) =
-        sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array))
-  let mergedAccounts = mergeAccounts accountMapping <$> fAccounts
+  let fAccounts :: V.Vector FinanciusAccount =
+        case sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array)) of
+          Nothing -> error $ "parsing accounts failed"
+          Just a -> a
+  mergedAccounts <- mergeAccounts accountMapping fAccounts
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
@@ -161,15 +163,20 @@ main = L.runStderrLoggingT $ do
 
   $(L.logInfo) "Done."
 
-mergeAccounts :: AccountMapping
-              -> V.Vector FinanciusAccount
-              -> HMS.HashMap Text BluecoinAccount
+mergeAccounts :: L.MonadLogger m
+  => AccountMapping
+  -> V.Vector FinanciusAccount
+  -> m (HMS.HashMap Text BluecoinAccount)
 mergeAccounts accountMapping fAccounts =
   let fAccounts' :: HMS.HashMap Text FinanciusAccount =
         HMS.fromList .
         V.toList $
         V.map (\facc@FinanciusAccount {faccId} -> (faccId, facc)) fAccounts
-  in HMS.mapMaybe identity $ mkBluecoinAccount accountMapping <$> fAccounts'
+      bAccounts :: HMS.HashMap Text (Maybe BluecoinAccount)
+      bAccounts = mkBluecoinAccount accountMapping <$> fAccounts'
+  in do
+    forM_ (HMS.keys $ HMS.filter isNothing bAccounts) $ \k -> $(L.logError) $ "Could not find mapping for account <" <> show k <> ">."
+    return $ HMS.mapMaybe identity bAccounts
 
 decodeValueEither :: (Aeson.FromJSON a) => Aeson.Value -> Either Text a
 decodeValueEither v = case Aeson.fromJSON v of
