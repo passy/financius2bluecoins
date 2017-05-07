@@ -197,7 +197,8 @@ mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
 
   -- TODO: Investigate out how ToId is used.
   case (flip HMS.lookup) baccs =<< ftxAccountFromId of
-        Nothing -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
+        Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
+                | otherwise -> pure Nothing
         Just btxAccount -> pure $ Just BluecoinTransaction{..}
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
