@@ -6,6 +6,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# OPTIONS -Wno-deprecations #-}
 
 module Main where
 
@@ -121,7 +122,9 @@ toFinanciusAccountLookupMap =
 
 vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
 vecCatMaybes = V.concatMap f
-  where f (Just a) = V.singleton a
+  where
+        f :: forall a. Maybe a -> V.Vector a
+        f (Just a) = V.singleton a
         f Nothing = V.empty
 
 main :: IO ()
@@ -137,24 +140,18 @@ main = L.runStderrLoggingT $ do
           Left e -> error $ "mapping parsing failed: " <> e
           Right a -> a
 
-  -- btxAccountId <- case HMS.lookup "fff81748-92fe-4ffa-be5a-e5407e31d1ac" accountMapping of
-  --   Nothing -> do
-  --     $(L.logWarn) "Couldn't find account mapping for account XYZ. Skipping entry."
-  --     return ()
-  --   Just a -> doWrite a
-
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: V.Vector FinanciusAccount =
         case sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array)) of
           Nothing -> error $ "parsing accounts failed"
           Just a -> a
-  mergedAccounts <- mergeAccounts accountMapping fAccounts
+  mergedAccounts :: HMS.HashMap Text BluecoinAccount <- mergeAccounts accountMapping fAccounts
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- forM transactions $ \tx -> do
       case Aeson.fromJSON tx of
-        Aeson.Success ftx -> Just <$> mkBluecoinTransaction conn ftx
+        Aeson.Success ftx -> Just <$> mkBluecoinTransaction conn mergedAccounts ftx
         Aeson.Error e -> do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
@@ -183,15 +180,23 @@ decodeValueEither v = case Aeson.fromJSON v of
   Aeson.Success res -> pure res
   Aeson.Error e -> Left $ T.pack e
 
-mkBluecoinTransaction :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> FinanciusTransaction -> io BluecoinTransaction
-mkBluecoinTransaction conn ftx = do
-  let itemName = if T.null (ftxNote ftx) then "(Unnamed transaction)" else ftxNote ftx
+mkBluecoinTransaction
+  :: (MonadIO io, L.MonadLogger io)
+  => SQL.Connection
+  -> HMS.HashMap Text BluecoinAccount
+  -> FinanciusTransaction
+  -> io BluecoinTransaction
+mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
+  let itemName =
+        if T.null ftxNote
+          then "(Unnamed transaction)"
+          else ftxNote
   btxItemId <- getOrCreateItem conn itemName
-  let btxAmount = ftxAmount ftx * 1000
-  let btxNotes = "passyImportId:" <> ftxId ftx
+  let btxAmount = ftxAmount * 1000
+  let btxNotes = "passyImportId:" <> ftxId
   -- TODO
-  let btxAccountId :: Integer = 2
-  return BluecoinTransaction{..}
+  let btxAccountId = 2
+  return BluecoinTransaction {..}
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount{..} = do
