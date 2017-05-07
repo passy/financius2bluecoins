@@ -137,7 +137,7 @@ main = L.runStderrLoggingT $ do
 
   let accountMapping :: AccountMapping =
         case first T.pack . Aeson.eitherDecodeStrict $ TE.encodeUtf8 mappingJson of
-          Left e -> error $ "mapping parsing failed: " <> e
+          Left e -> error $ "parsing mapping file " <> show (mappingFile args) <> " failed: " <> e
           Right a -> a
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
