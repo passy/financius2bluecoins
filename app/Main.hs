@@ -31,7 +31,7 @@ data Args = Args
   , mappingFile :: FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
-type AccountMapping = HMS.HashMap Text Integer
+type AccountMapping = HMS.HashMap Text Int64
 
 data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
@@ -161,12 +161,15 @@ main = L.runStderrLoggingT $ do
 
   $(L.logInfo) "Done."
 
-mergeAccounts :: AccountMapping -> V.Vector FinanciusAccount -> HMS.HashMap Text BluecoinAccount
+mergeAccounts :: AccountMapping
+              -> V.Vector FinanciusAccount
+              -> HMS.HashMap Text BluecoinAccount
 mergeAccounts accountMapping fAccounts =
-  -- This results in O(n^2) lookups, but the number of accounts is low.
-  let fAccounts' :: [(Text, FinanciusAccount)] =
-        V.toList $ V.map (\facc@FinanciusAccount{faccId} -> (faccId, facc))
-  in undefined
+  let fAccounts' :: HMS.HashMap Text FinanciusAccount =
+        HMS.fromList .
+        V.toList $
+        V.map (\facc@FinanciusAccount {faccId} -> (faccId, facc)) fAccounts
+  in HMS.mapMaybe identity $ mkBluecoinAccount accountMapping <$> fAccounts'
 
 decodeValueEither :: (Aeson.FromJSON a) => Aeson.Value -> Either Text a
 decodeValueEither v = case Aeson.fromJSON v of
@@ -182,6 +185,12 @@ mkBluecoinTransaction conn ftx = do
   -- TODO
   let btxAccountId :: Integer = 2
   return BluecoinTransaction{..}
+
+mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
+mkBluecoinAccount accountMapping FinanciusAccount{..} = do
+  let baccCurrencyCode = faccCurrencyCode
+  baccId <- RowId <$> HMS.lookup faccId accountMapping
+  pure BluecoinAccount{..}
 
 writeBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
