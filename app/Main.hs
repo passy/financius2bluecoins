@@ -27,6 +27,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
+import qualified Data.Hashable as Hashable
 
 data Args = Args
   { financiusFile :: FilePath
@@ -54,11 +55,22 @@ data FinanciusAccount = FinanciusAccount
   , faccCurrencyCode :: Text
   } deriving (Eq, Show)
 
+data FinanciusCategory = FinanciusCategory
+  { fcatId :: Text
+  , fcatName :: Text
+  } deriving (Eq, Show)
+
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
     FinanciusAccount
       <$> o .: "id"
       <*> o .: "currency_code"
+
+instance Aeson.FromJSON FinanciusCategory where
+  parseJSON = Aeson.withObject "category" $ \o ->
+    FinanciusCategory
+      <$> o .: "id"
+      <*> o .: "title"
 
 data FinanciusTransaction = FinanciusTransaction
   { ftxId :: Text
@@ -121,9 +133,17 @@ getOrCreateItem conn name = do
     (\c -> SQL.query c "SELECT itemTableId FROM ITEMTABLE WHERE itemName = ?" (SQL.Only name))
     (\c -> SQL.execute c "INSERT INTO ITEMTABLE (itemName) VALUES (?)" (SQL.Only name))
 
-toFinanciusAccountLookupMap :: V.Vector FinanciusAccount -> HMS.HashMap Text FinanciusAccount
-toFinanciusAccountLookupMap =
-  HMS.fromList . V.toList . V.map (\acc@FinanciusAccount{..} -> (faccId, acc))
+toLookupMap ::
+  (Hashable.Hashable b, Eq b) =>
+  (a -> (b, a)) ->
+  V.Vector a ->
+  HMS.HashMap b a
+toLookupMap extract =
+  HMS.fromList . V.toList . V.map extract
+
+toFinanciusCategoryLookupMap :: V.Vector FinanciusCategory -> HMS.HashMap Text FinanciusCategory
+toFinanciusCategoryLookupMap =
+  toLookupMap (\cat@FinanciusCategory{..} -> (fcatId, cat))
 
 vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
 vecCatMaybes = V.concatMap f
@@ -131,6 +151,14 @@ vecCatMaybes = V.concatMap f
         f :: forall a. Maybe a -> V.Vector a
         f (Just a) = V.singleton a
         f Nothing = V.empty
+
+decodeJSONArray
+  :: (AsValue s, Aeson.FromJSON a)
+  => Text
+  -> s
+  -> Maybe (V.Vector a)
+decodeJSONArray key_ json =
+  sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (json ^? key key_. _Array))
 
 main :: IO ()
 main = L.runStderrLoggingT $ do
@@ -147,10 +175,12 @@ main = L.runStderrLoggingT $ do
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: V.Vector FinanciusAccount =
-        case sequenceA $ join <$> sequenceA (fmap (hush . decodeValueEither) <$> (financiusJson ^? key "accounts" . _Array)) of
-          Nothing -> error $ "parsing accounts failed"
-          Just a -> a
+        fromMaybe (error "parsing accounts failed") (decodeJSONArray "accounts" financiusJson)
+
   mergedAccounts :: HMS.HashMap Text BluecoinAccount <- mergeAccounts accountMapping fAccounts
+
+  let fCategories :: HMS.HashMap Text FinanciusCategory =
+        maybe (error "parsing accounts failed") (toFinanciusCategoryLookupMap) (decodeJSONArray "categories" financiusJson)
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
@@ -161,6 +191,7 @@ main = L.runStderrLoggingT $ do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
 
+  $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
@@ -206,6 +237,19 @@ mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
         Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
                 | otherwise -> pure Nothing
         Just btxAccount -> pure $ Just BluecoinTransaction{..}
+
+findChildCategoryByName
+  :: (MonadIO io, L.MonadLogger io)
+  => SQL.Connection
+  -> Text
+  -> io (Maybe RowId)
+findChildCategoryByName conn name = do
+  res <- liftIO $ SQL.query conn "SELECT childCategoryTableID FROM CHILDCATEGORYTABLE WHERE childCategoryName = ?" (SQL.Only name)
+  case head res of
+    Just rowId -> pure $ Just rowId
+    Nothing -> do
+      $(L.logError) $ "Could not find category '" <> name <> "'."
+      pure Nothing
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount{..} = do
