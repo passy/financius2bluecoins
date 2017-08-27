@@ -16,6 +16,7 @@ import Control.Lens
 import Options.Generic (ParseRecord, getRecord)
 import Data.Aeson ((.:), (.:?))
 import Database.SQLite.Simple (NamedParam((:=)))
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 
 import qualified Data.Aeson as Aeson
 import qualified Control.Monad.Logger as L
@@ -28,6 +29,13 @@ import qualified Data.Text as T
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Hashable as Hashable
+
+-- * Constants
+
+transferCategoryName :: Text
+transferCategoryName = "(Transfer)"
+
+-- * Definitions
 
 data Args = Args
   { financiusFile :: FilePath
@@ -43,12 +51,18 @@ data BluecoinTransaction = BluecoinTransaction
   , btxNotes :: Text
   , btxDate :: Clock.UTCTime
   , btxAccount :: BluecoinAccount
+  , btxCategoryId :: RowId
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
   { baccId :: RowId
   , baccCurrencyCode :: Text
   } deriving (Eq, Show)
+
+data BluecoinCategory = BluecoinCategory
+  { bcatId :: RowId
+  , bcatName :: Text
+  }
 
 data FinanciusAccount = FinanciusAccount
   { faccId :: Text
@@ -79,6 +93,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxNote :: Text
   , ftxAmount :: Integer
   , ftxDate :: Integer
+  , ftxCategoryId :: Maybe Text
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -90,6 +105,7 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "note"
         <*> o .: "amount"
         <*> o .: "date"
+        <*> o .: "category_id"
 
 data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
@@ -112,6 +128,9 @@ instance SQL.FromRow RowId where
 
 instance SQL.ToField RowId where
   toField (RowId i) = SQL.toField i
+
+instance SQL.FromRow BluecoinCategory where
+  fromRow = BluecoinCategory <$> (RowId <$> SQL.field) <*> SQL.field
 
 getOrCreate
   :: MonadIO io
@@ -143,7 +162,7 @@ toLookupMap extract =
 
 toFinanciusCategoryLookupMap :: V.Vector FinanciusCategory -> HMS.HashMap Text FinanciusCategory
 toFinanciusCategoryLookupMap =
-  toLookupMap (\cat@FinanciusCategory{..} -> (fcatId, cat))
+  toLookupMap (\cat@FinanciusCategory{..} -> (fcatName, cat))
 
 vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
 vecCatMaybes = V.concatMap f
@@ -181,12 +200,14 @@ main = L.runStderrLoggingT $ do
 
   let fCategories :: HMS.HashMap Text FinanciusCategory =
         maybe (error "parsing accounts failed") (toFinanciusCategoryLookupMap) (decodeJSONArray "categories" financiusJson)
+  bCategories <- getBluecoinCategories conn
+  mergedCategories :: HMS.HashMap Text BluecoinCategory <- mergeCategories bCategories fCategories
 
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- forM transactions $ \tx -> do
       case Aeson.fromJSON tx of
-        Aeson.Success ftx -> mkBluecoinTransaction conn mergedAccounts ftx
+        Aeson.Success ftx -> runMaybeT $ mkBluecoinTransaction conn mergedAccounts mergedCategories ftx
         Aeson.Error e -> do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
@@ -195,6 +216,34 @@ main = L.runStderrLoggingT $ do
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
+
+
+mergeCategories
+  :: L.MonadLogger m
+  => [BluecoinCategory]
+  -> HMS.HashMap Text FinanciusCategory
+  -> m (HMS.HashMap Text BluecoinCategory)
+mergeCategories bCategories fCategories = do
+  vals <- catMaybes <$> mapM extract bCategories
+  return $ HMS.fromList vals
+  where
+    extract
+      :: L.MonadLogger m
+      => BluecoinCategory
+      -> m (Maybe (Text, BluecoinCategory))
+    extract bcat@BluecoinCategory{..} =
+      case HMS.lookup bcatName fCategories of
+        Just FinanciusCategory{..} -> return $ Just (fcatId, bcat)
+        Nothing -> do
+          $(L.logError) $ "Could not find corresponding Financius category for '" <> bcatName <> "'."
+          return Nothing
+
+getBluecoinCategories
+  :: MonadIO io
+  => SQL.Connection
+  -> io [BluecoinCategory]
+getBluecoinCategories conn =
+  liftIO $ SQL.query_ conn "SELECT categoryTableID, childCategoryName FROM CHILDCATEGORYTABLE"
 
 mergeAccounts :: L.MonadLogger m
   => AccountMapping
@@ -220,36 +269,30 @@ mkBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
   => SQL.Connection
   -> HMS.HashMap Text BluecoinAccount
+  -> HMS.HashMap Text BluecoinCategory
   -> FinanciusTransaction
-  -> io (Maybe BluecoinTransaction)
-mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
+  -> MaybeT io BluecoinTransaction
+mkBluecoinTransaction conn baccs bcats FinanciusTransaction{..} = do
   let itemName =
         if T.null ftxNote
           then "(Unnamed transaction)"
           else ftxNote
-  btxItemId <- getOrCreateItem conn itemName
+  btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxAmount = ftxAmount * 10000
   let btxNotes = "passyImportId:" <> ftxId
   let btxDate = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
 
   -- TODO: Investigate out how ToId is used.
-  case (flip HMS.lookup) baccs =<< ftxAccountFromId of
-        Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
-                | otherwise -> pure Nothing
-        Just btxAccount -> pure $ Just BluecoinTransaction{..}
+  btxAccount <- MaybeT $ case (flip HMS.lookup) baccs =<< ftxAccountFromId of
+    Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
+            | otherwise -> pure Nothing
+    Just btxAccount -> pure $ Just btxAccount
 
-findChildCategoryByName
-  :: (MonadIO io, L.MonadLogger io)
-  => SQL.Connection
-  -> Text
-  -> io (Maybe RowId)
-findChildCategoryByName conn name = do
-  res <- liftIO $ SQL.query conn "SELECT childCategoryTableID FROM CHILDCATEGORYTABLE WHERE childCategoryName = ?" (SQL.Only name)
-  case head res of
-    Just rowId -> pure $ Just rowId
-    Nothing -> do
-      $(L.logError) $ "Could not find category '" <> name <> "'."
-      pure Nothing
+  btxCategoryId <- MaybeT $ case (flip HMS.lookup) bcats (fromMaybe transferCategoryName ftxCategoryId) of
+    Nothing -> ($(L.logError) $ "Invariant violation: category id not populated: " <> show ftxCategoryId) >> pure Nothing
+    Just BluecoinCategory{..} -> pure $ Just bcatId
+
+  return $ BluecoinTransaction{..}
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount{..} = do

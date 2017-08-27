@@ -41,6 +41,7 @@ dependencies:
   - monad-logger
   - time
   - hashable
+  - transformers
 
 executables:
   financius2bluecoin:
