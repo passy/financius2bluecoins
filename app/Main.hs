@@ -316,13 +316,13 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     , ":notes" := btxNotes
     , ":date" := btxDate
     , ":accountID" := baccId btxAccount
+    , ":categoryID" := btxCategoryId
     , ":hasPhoto" := (0 :: Int)
     , ":labelCount" := (0 :: Int)
     -- TODO
     , ":transactionCurrency" := ("GBP" :: Text)
     , ":conversionRateNew" := (1.0 :: Double)
     , ":transactionTypeID" := (fromEnum Expense)
-    , ":categoryID" := (2 :: Int)
     , ":tags" := ("temptags" :: Text)
     , ":accountReference" := (3 :: Int)
     , ":accountPairID" := baccId btxAccount
