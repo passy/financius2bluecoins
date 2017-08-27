@@ -161,7 +161,7 @@ main = L.runStderrLoggingT $ do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
 
-  _ <- mapM (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
+  mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
 
   $(L.logInfo) "Done."
 
