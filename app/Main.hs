@@ -25,6 +25,8 @@ import qualified Database.SQLite.Simple.ToField as SQL
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
+import qualified Data.Time.Clock as Clock
+import qualified Data.Time.Clock.POSIX as PClock
 
 data Args = Args
   { financiusFile :: FilePath
@@ -38,6 +40,7 @@ data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
   , btxAmount :: Integer
   , btxNotes :: Text
+  , btxDate :: Clock.UTCTime
   , btxAccount :: BluecoinAccount
   } deriving (Eq, Show)
 
@@ -63,6 +66,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxAccountToId :: Maybe Text
   , ftxNote :: Text
   , ftxAmount :: Integer
+  , ftxDate :: Integer
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -73,6 +77,7 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .:? "account_to_id"
         <*> o .: "note"
         <*> o .: "amount"
+        <*> o .: "date"
 
 data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
@@ -192,8 +197,9 @@ mkBluecoinTransaction conn baccs FinanciusTransaction {..} = do
           then "(Unnamed transaction)"
           else ftxNote
   btxItemId <- getOrCreateItem conn itemName
-  let btxAmount = ftxAmount * 1000
+  let btxAmount = ftxAmount * 10000
   let btxNotes = "passyImportId:" <> ftxId
+  let btxDate = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
 
   -- TODO: Investigate out how ToId is used.
   case (flip HMS.lookup) baccs =<< ftxAccountFromId of
@@ -214,13 +220,14 @@ writeBluecoinTransaction
   -> io ()
 writeBluecoinTransaction conn BluecoinTransaction{..} = do
   let sql :: SQL.Query =
-        "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount)\
+        "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
         \ VALUES\
-        \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount)"
+        \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount, :date)"
   liftIO $ SQL.executeNamed conn sql
     [ ":itemID" := btxItemId
     , ":amount" := btxAmount
     , ":notes" := btxNotes
+    , ":date" := btxDate
     , ":accountID" := baccId btxAccount
     , ":hasPhoto" := (0 :: Int)
     , ":labelCount" := (0 :: Int)
@@ -231,7 +238,23 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     , ":categoryID" := (2 :: Int)
     , ":tags" := ("temptags" :: Text)
     , ":accountReference" := (3 :: Int)
-    , ":accountPairID" := (123345 :: Int)
-    , ":uidPairID" := (12355 :: Int)
+    , ":accountPairID" := baccId btxAccount
+    , ":uidPairID" := (-1 :: Int)
     , ":deletedTransaction" := (6 :: Int)
+    ]
+  updateLastTransaction conn
+
+-- | Transactions are self-referential, so we need to update written transactions once.
+-- If you run this without having inserted a transaction before, you'll be in big trouble.
+updateLastTransaction
+  :: (MonadIO io, L.MonadLogger io)
+  => SQL.Connection
+  -> io ()
+updateLastTransaction conn = do
+  let sql :: SQL.Query =
+        "UPDATE TRANSACTIONSTABLE SET uidPairID = :lastId WHERE transactionsTableID = :lastId"
+
+  lastRowId <- liftIO $ SQL.lastInsertRowId conn
+  liftIO $ SQL.executeNamed conn sql
+    [ ":lastId" := lastRowId
     ]

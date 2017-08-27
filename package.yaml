@@ -39,6 +39,7 @@ dependencies:
   - optparse-generic
   - vector
   - monad-logger
+  - time
 
 executables:
   financius2bluecoin:
