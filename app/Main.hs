@@ -52,6 +52,7 @@ data BluecoinTransaction = BluecoinTransaction
   , btxDate :: Clock.UTCTime
   , btxAccount :: BluecoinAccount
   , btxCategoryId :: RowId
+  , btxLabels :: [Text]
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
@@ -105,6 +106,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxAmount :: Integer
   , ftxDate :: Integer
   , ftxCategoryId :: Maybe Text
+  , ftxTagIds :: [Text]
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -117,6 +119,7 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "amount"
         <*> o .: "date"
         <*> o .: "category_id"
+        <*> o .: "tag_ids"
 
 data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
@@ -177,7 +180,7 @@ toFinanciusCategoryLookupMap =
 
 toFinanciusTagLookupMap :: V.Vector FinanciusTag -> HMS.HashMap Text FinanciusTag
 toFinanciusTagLookupMap =
-  toLookupMap (\tag@FinanciusTag{..} -> (ftagName, tag))
+  toLookupMap (\tag@FinanciusTag{..} -> (ftagId, tag))
 
 vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
 vecCatMaybes = V.concatMap f
@@ -301,6 +304,7 @@ mkBluecoinTransaction conn baccs bcats ftags FinanciusTransaction{..} = do
   let btxAmount = ftxAmount * 10000
   let btxNotes = "passyImportId:" <> ftxId
   let btxDate = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
+  let btxLabels :: [Text] = ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
 
   -- TODO: Investigate out how ToId is used.
   btxAccount <- MaybeT $ case (flip HMS.lookup) baccs =<< ftxAccountFromId of
@@ -338,7 +342,7 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     , ":accountID" := baccId btxAccount
     , ":categoryID" := btxCategoryId
     , ":hasPhoto" := (0 :: Int)
-    , ":labelCount" := (0 :: Int)
+    , ":labelCount" := length btxLabels
     -- TODO
     , ":transactionCurrency" := ("GBP" :: Text)
     , ":conversionRateNew" := (1.0 :: Double)
@@ -349,14 +353,31 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     , ":uidPairID" := (-1 :: Int)
     , ":deletedTransaction" := (6 :: Int)
     ]
-  updateLastTransaction conn
+  rowId <- updateLastTransaction conn
+
+  mapM_ (writeBluecoinLabel conn rowId) btxLabels
+
+writeBluecoinLabel
+  :: (MonadIO io, L.MonadLogger io)
+  => SQL.Connection
+  -> RowId
+  -> Text
+  -> io ()
+writeBluecoinLabel conn (RowId rowId) label = do
+  let sql :: SQL.Query =
+        "INSERT INTO LABELSTABLE (labelName, transactionIDLabels)\
+        \ VALUES\
+        \ (:label, :rowId)"
+  liftIO $ SQL.executeNamed conn sql
+     [ ":label" := label
+     , ":rowId" := rowId ]
 
 -- | Transactions are self-referential, so we need to update written transactions once.
 -- If you run this without having inserted a transaction before, you'll be in big trouble.
 updateLastTransaction
   :: (MonadIO io, L.MonadLogger io)
   => SQL.Connection
-  -> io ()
+  -> io RowId
 updateLastTransaction conn = do
   let sql :: SQL.Query =
         "UPDATE TRANSACTIONSTABLE SET uidPairID = :lastId WHERE transactionsTableID = :lastId"
@@ -365,3 +386,4 @@ updateLastTransaction conn = do
   liftIO $ SQL.executeNamed conn sql
     [ ":lastId" := lastRowId
     ]
+  return $ RowId lastRowId
