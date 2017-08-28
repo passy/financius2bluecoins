@@ -52,10 +52,11 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAmount :: Integer
   , btxNotes :: Text
   , btxDate :: Clock.UTCTime
-  , btxAccount :: BluecoinAccount
+  , btxAccount :: TransactionBundle
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
   , btxConversionRate :: Double
+  , btxTransactionType :: TransactionType
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
@@ -82,6 +83,9 @@ data FinanciusTag = FinanciusTag
   { ftagId :: Text
   , ftagName :: Text
   } deriving (Eq, Show)
+
+data TransactionBundle = Single BluecoinAccount | Double BluecoinAccount BluecoinAccount
+  deriving (Show, Eq)
 
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
@@ -300,6 +304,29 @@ decodeValueEither v = case Aeson.fromJSON v of
   Aeson.Success res -> pure res
   Aeson.Error e -> Left $ T.pack e
 
+getBtxAccount
+  :: L.MonadLogger m
+  => HMS.HashMap Text BluecoinAccount
+  -> FinanciusTransaction
+  -> MaybeT m TransactionBundle
+getBtxAccount baccs FinanciusTransaction{..} = do
+  -- My Lord, this turned out really nicely.
+  case ftxTransactionType of
+    Expense -> Single <$> lookup ftxAccountFromId
+    Income -> Single <$> lookup ftxAccountToId
+    Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
+
+  where
+    lookup
+      :: L.MonadLogger m
+      => Maybe Text
+      -> MaybeT m BluecoinAccount
+    lookup field =
+      do MaybeT $ case (flip HMS.lookup) baccs =<< field of
+          Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: account not in mapping list: " <> show field) >> pure Nothing
+                  | otherwise -> pure Nothing
+          Just btxAccount -> pure $ Just btxAccount
+
 mkBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
   => SQL.Connection
@@ -308,24 +335,23 @@ mkBluecoinTransaction
   -> HMS.HashMap Text FinanciusTag
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags FinanciusTransaction{..} = do
+mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction{..} = do
   let itemName =
         if T.null ftxNote
           then "(Unnamed transaction)"
           else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
-  let btxAmount = ftxAmount * 10000
   let btxNotes = "passyImportId:" <> ftxId
+  let btxAmount = ftxAmount * 10000
   let btxDate = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
   let btxLabels :: [Text] = ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate = ftxExchangeRate
+  let btxTransactionType = ftxTransactionType
 
   -- TODO: Investigate out how ToId is used.
-  btxAccount <- MaybeT $ case (flip HMS.lookup) baccs =<< ftxAccountFromId of
-    Nothing | isJust ftxAccountFromId -> ($(L.logError) $ "Invariant violation: fromAccountId not in accounts list: " <> show ftxAccountFromId) >> pure Nothing
-            | otherwise -> pure Nothing
-    Just btxAccount -> pure $ Just btxAccount
+  btxAccount <- getBtxAccount baccs ftx
 
+  -- FIXME: This doesn't actually fall back.
   btxCategoryId <- MaybeT $ case (flip HMS.lookup) bcats (fromMaybe transferCategoryName ftxCategoryId) of
     Nothing -> ($(L.logError) $ "Invariant violation: category id not populated: " <> show ftxCategoryId) >> pure Nothing
     Just BluecoinCategory{..} -> pure $ Just bcatId
@@ -344,28 +370,40 @@ writeBluecoinTransaction
   -> BluecoinTransaction
   -> io ()
 writeBluecoinTransaction conn BluecoinTransaction{..} = do
+  let amount = case btxTransactionType of
+        Expense -> negate btxAmount
+        Income -> btxAmount
+        -- TODO
+        Transfer -> 0
+
+  -- FIXME: This obviously ignores half of the transaction at the moment.
+  account <- case btxAccount of
+        Single a -> pure a
+        Double a _ ->
+          ($(L.logError) "FIXME - Omitting half of the transaction. Woops.") >> pure a
+
   let sql :: SQL.Query =
         "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
         \ VALUES\
         \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount, :date)"
   liftIO $ SQL.executeNamed conn sql
     [ ":itemID" := btxItemId
-    , ":amount" := btxAmount
+    , ":amount" := amount
     , ":notes" := btxNotes
     , ":date" := btxDate
-    , ":accountID" := baccId btxAccount
+    , ":accountID" := baccId account
     , ":categoryID" := btxCategoryId
     , ":hasPhoto" := (0 :: Int)
     , ":labelCount" := length btxLabels
-    , ":conversionRateNew" := (btxConversionRate :: Double)
+    , ":conversionRateNew" := btxConversionRate
+    , ":transactionTypeID" := fromEnum btxTransactionType
+    , ":uidPairID" := (-1 :: Int)
+    , ":accountPairID" := baccId account
+    , ":accountReference" := (3 :: Int)
+    , ":deletedTransaction" := (6 :: Int)
     -- TODO
     , ":transactionCurrency" := ("GBP" :: Text)
-    , ":transactionTypeID" := (fromEnum Expense)
     , ":tags" := ("temptags" :: Text)
-    , ":accountReference" := (3 :: Int)
-    , ":accountPairID" := baccId btxAccount
-    , ":uidPairID" := (-1 :: Int)
-    , ":deletedTransaction" := (6 :: Int)
     ]
   rowId <- updateLastTransaction conn
 
