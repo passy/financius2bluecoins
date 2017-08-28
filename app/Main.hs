@@ -53,6 +53,7 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAccount :: BluecoinAccount
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
+  , btxConversionRate :: Double
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
@@ -107,6 +108,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxDate :: Integer
   , ftxCategoryId :: Maybe Text
   , ftxTagIds :: [Text]
+  , ftxExchangeRate :: Double
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -120,6 +122,7 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "date"
         <*> o .: "category_id"
         <*> o .: "tag_ids"
+        <*> o .: "exchange_rate"
 
 data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
@@ -305,6 +308,7 @@ mkBluecoinTransaction conn baccs bcats ftags FinanciusTransaction{..} = do
   let btxNotes = "passyImportId:" <> ftxId
   let btxDate = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
   let btxLabels :: [Text] = ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
+  let btxConversionRate = ftxExchangeRate
 
   -- TODO: Investigate out how ToId is used.
   btxAccount <- MaybeT $ case (flip HMS.lookup) baccs =<< ftxAccountFromId of
@@ -343,9 +347,9 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
     , ":categoryID" := btxCategoryId
     , ":hasPhoto" := (0 :: Int)
     , ":labelCount" := length btxLabels
+    , ":conversionRateNew" := (btxConversionRate :: Double)
     -- TODO
     , ":transactionCurrency" := ("GBP" :: Text)
-    , ":conversionRateNew" := (1.0 :: Double)
     , ":transactionTypeID" := (fromEnum Expense)
     , ":tags" := ("temptags" :: Text)
     , ":accountReference" := (3 :: Int)
