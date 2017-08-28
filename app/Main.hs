@@ -74,6 +74,11 @@ data FinanciusCategory = FinanciusCategory
   , fcatName :: Text
   } deriving (Eq, Show)
 
+data FinanciusTag = FinanciusTag
+  { ftagId :: Text
+  , ftagName :: Text
+  } deriving (Eq, Show)
+
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
     FinanciusAccount
@@ -83,6 +88,12 @@ instance Aeson.FromJSON FinanciusAccount where
 instance Aeson.FromJSON FinanciusCategory where
   parseJSON = Aeson.withObject "category" $ \o ->
     FinanciusCategory
+      <$> o .: "id"
+      <*> o .: "title"
+
+instance Aeson.FromJSON FinanciusTag where
+  parseJSON = Aeson.withObject "tag" $ \o ->
+    FinanciusTag
       <$> o .: "id"
       <*> o .: "title"
 
@@ -164,6 +175,10 @@ toFinanciusCategoryLookupMap :: V.Vector FinanciusCategory -> HMS.HashMap Text F
 toFinanciusCategoryLookupMap =
   toLookupMap (\cat@FinanciusCategory{..} -> (fcatName, cat))
 
+toFinanciusTagLookupMap :: V.Vector FinanciusTag -> HMS.HashMap Text FinanciusTag
+toFinanciusTagLookupMap =
+  toLookupMap (\tag@FinanciusTag{..} -> (ftagName, tag))
+
 vecCatMaybes :: V.Vector (Maybe a) -> V.Vector a
 vecCatMaybes = V.concatMap f
   where
@@ -203,11 +218,15 @@ main = L.runStderrLoggingT $ do
   bCategories <- getBluecoinCategories conn
   mergedCategories :: HMS.HashMap Text BluecoinCategory <- mergeCategories bCategories fCategories
 
+  let fTags :: HMS.HashMap Text FinanciusTag =
+        maybe (error "parsing tags failed") (toFinanciusTagLookupMap) (decodeJSONArray "tags" financiusJson)
+
   let transactions = fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- forM transactions $ \tx -> do
       case Aeson.fromJSON tx of
-        Aeson.Success ftx -> runMaybeT $ mkBluecoinTransaction conn mergedAccounts mergedCategories ftx
+        Aeson.Success ftx -> runMaybeT $
+          mkBluecoinTransaction conn mergedAccounts mergedCategories fTags ftx
         Aeson.Error e -> do
           $(L.logError) $ "Couldn't parse transaction: " <> show e
           return Nothing
@@ -270,9 +289,10 @@ mkBluecoinTransaction
   => SQL.Connection
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
+  -> HMS.HashMap Text FinanciusTag
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats FinanciusTransaction{..} = do
+mkBluecoinTransaction conn baccs bcats ftags FinanciusTransaction{..} = do
   let itemName =
         if T.null ftxNote
           then "(Unnamed transaction)"
