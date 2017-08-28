@@ -17,8 +17,10 @@ import Options.Generic (ParseRecord, getRecord)
 import Data.Aeson ((.:), (.:?))
 import Database.SQLite.Simple (NamedParam((:=)))
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
+import Control.Monad.Fail (fail)
 
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson
 import qualified Control.Monad.Logger as L
 import qualified Data.Vector as V
 import qualified Database.SQLite.Simple as SQL
@@ -109,6 +111,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxCategoryId :: Maybe Text
   , ftxTagIds :: [Text]
   , ftxExchangeRate :: Double
+  , ftxTransactionType :: TransactionType
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -123,6 +126,13 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "category_id"
         <*> o .: "tag_ids"
         <*> o .: "exchange_rate"
+        <*> (fromFtxType =<< o .: "transaction_type")
+
+fromFtxType :: Integer -> Aeson.Parser TransactionType
+fromFtxType 1 = pure Expense
+fromFtxType 2 = pure Income
+fromFtxType 3 = pure Transfer
+fromFtxType _ = fail "Invalid ftx transaction type"
 
 data TransactionType = Transfer | Income | Expense
   deriving (Eq, Show)
