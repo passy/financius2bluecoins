@@ -26,7 +26,6 @@ import qualified Data.Vector as V
 import qualified Database.SQLite.Simple as SQL
 import qualified Database.SQLite.Simple.ToField as SQL
 import qualified Data.HashMap.Strict as HMS
-import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
@@ -42,7 +41,6 @@ transferCategoryName = "(Transfer)"
 data Args = Args
   { financiusFile :: FilePath
   , bluecoinFile :: FilePath
-  , mappingFile :: FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
 type AccountMapping = HMS.HashMap Text Int64
@@ -61,17 +59,19 @@ data BluecoinTransaction = BluecoinTransaction
 
 data BluecoinAccount = BluecoinAccount
   { baccId :: RowId
+  , baccName :: Text
   , baccCurrencyCode :: Text
   } deriving (Eq, Show)
 
 data BluecoinCategory = BluecoinCategory
   { bcatId :: RowId
   , bcatName :: Text
-  }
+  } deriving (Eq, Show)
 
 data FinanciusAccount = FinanciusAccount
   { faccId :: Text
   , faccCurrencyCode :: Text
+  , faccName :: Text
   } deriving (Eq, Show)
 
 data FinanciusCategory = FinanciusCategory
@@ -92,6 +92,7 @@ instance Aeson.FromJSON FinanciusAccount where
     FinanciusAccount
       <$> o .: "id"
       <*> o .: "currency_code"
+      <*> o .: "title"
 
 instance Aeson.FromJSON FinanciusCategory where
   parseJSON = Aeson.withObject "category" $ \o ->
@@ -163,6 +164,9 @@ instance SQL.ToField RowId where
 instance SQL.FromRow BluecoinCategory where
   fromRow = BluecoinCategory <$> (RowId <$> SQL.field) <*> SQL.field
 
+instance SQL.FromRow BluecoinAccount where
+  fromRow = BluecoinAccount <$> (RowId <$> SQL.field) <*> SQL.field <*> SQL.field
+
 getOrCreate
   :: MonadIO io
   => SQL.Connection
@@ -195,6 +199,10 @@ toFinanciusCategoryLookupMap :: V.Vector FinanciusCategory -> HMS.HashMap Text F
 toFinanciusCategoryLookupMap =
   toLookupMap (\cat@FinanciusCategory{..} -> (fcatName, cat))
 
+toFinanciusAccountLookupMap :: V.Vector FinanciusAccount -> HMS.HashMap Text FinanciusAccount
+toFinanciusAccountLookupMap =
+  toLookupMap (\acc@FinanciusAccount{..} -> (faccName, acc))
+
 toFinanciusTagLookupMap :: V.Vector FinanciusTag -> HMS.HashMap Text FinanciusTag
 toFinanciusTagLookupMap =
   toLookupMap (\tag@FinanciusTag{..} -> (ftagId, tag))
@@ -219,22 +227,17 @@ main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
   args :: Args <- getRecord "financius2bluecoin"
   financiusJson <- liftIO . readFile $ financiusFile args
-  mappingJson <- liftIO . readFile $ mappingFile args
   conn <- liftIO . SQL.open $ bluecoinFile args
 
-  let accountMapping :: AccountMapping =
-        case first T.pack . Aeson.eitherDecodeStrict $ TE.encodeUtf8 mappingJson of
-          Left e -> error $ "parsing mapping file " <> show (mappingFile args) <> " failed: " <> e
-          Right a -> a
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
-  let fAccounts :: V.Vector FinanciusAccount =
-        fromMaybe (error "parsing accounts failed") (decodeJSONArray "accounts" financiusJson)
-
-  mergedAccounts :: HMS.HashMap Text BluecoinAccount <- mergeAccounts accountMapping fAccounts
+  let fAccounts :: HMS.HashMap Text FinanciusAccount =
+        maybe (error "parsing accounts failed") toFinanciusAccountLookupMap (decodeJSONArray "accounts" financiusJson)
+  bAccounts <- getBluecoinAccounts conn
+  mergedAccounts :: HMS.HashMap Text BluecoinAccount <- mergeAccounts bAccounts fAccounts
 
   let fCategories :: HMS.HashMap Text FinanciusCategory =
-        maybe (error "parsing accounts failed") (toFinanciusCategoryLookupMap) (decodeJSONArray "categories" financiusJson)
+        maybe (error "parsing accounts failed") toFinanciusCategoryLookupMap (decodeJSONArray "categories" financiusJson)
   bCategories <- getBluecoinCategories conn
   mergedCategories :: HMS.HashMap Text BluecoinCategory <- mergeCategories bCategories fCategories
 
@@ -256,7 +259,6 @@ main = L.runStderrLoggingT $ do
 
   $(L.logInfo) "Done."
 
-
 mergeCategories
   :: L.MonadLogger m
   => [BluecoinCategory]
@@ -277,6 +279,27 @@ mergeCategories bCategories fCategories = do
           $(L.logError) $ "Could not find corresponding Financius category for '" <> bcatName <> "'."
           return Nothing
 
+-- TODO: Generify
+mergeAccounts
+  :: L.MonadLogger m
+  => [BluecoinAccount]
+  -> HMS.HashMap Text FinanciusAccount
+  -> m (HMS.HashMap Text BluecoinAccount)
+mergeAccounts bAccounts fAccounts = do
+  vals <- catMaybes <$> mapM extract bAccounts
+  return $ HMS.fromList vals
+  where
+    extract
+      :: L.MonadLogger m
+      => BluecoinAccount
+      -> m (Maybe (Text, BluecoinAccount))
+    extract facc@BluecoinAccount{..} =
+      case HMS.lookup baccName fAccounts of
+        Just FinanciusAccount{..} -> return $ Just (faccId, facc)
+        Nothing -> do
+          $(L.logError) $ "Could not find corresponding Financius account for '" <> baccName <> "'."
+          return Nothing
+
 getBluecoinCategories
   :: MonadIO io
   => SQL.Connection
@@ -284,20 +307,12 @@ getBluecoinCategories
 getBluecoinCategories conn =
   liftIO $ SQL.query_ conn "SELECT categoryTableID, childCategoryName FROM CHILDCATEGORYTABLE"
 
-mergeAccounts :: L.MonadLogger m
-  => AccountMapping
-  -> V.Vector FinanciusAccount
-  -> m (HMS.HashMap Text BluecoinAccount)
-mergeAccounts accountMapping fAccounts =
-  let fAccounts' :: HMS.HashMap Text FinanciusAccount =
-        HMS.fromList .
-        V.toList $
-        V.map (\facc@FinanciusAccount {faccId} -> (faccId, facc)) fAccounts
-      bAccounts :: HMS.HashMap Text (Maybe BluecoinAccount)
-      bAccounts = mkBluecoinAccount accountMapping <$> fAccounts'
-  in do
-    forM_ (HMS.keys $ HMS.filter isNothing bAccounts) $ \k -> $(L.logError) $ "Could not find mapping for account <" <> show k <> ">."
-    return $ HMS.mapMaybe identity bAccounts
+getBluecoinAccounts
+  :: MonadIO io
+  => SQL.Connection
+  -> io [BluecoinAccount]
+getBluecoinAccounts conn =
+  liftIO $ SQL.query_ conn "SELECT accountsTableID, accountName, accountCurrency FROM ACCOUNTSTABLE"
 
 decodeValueEither :: (Aeson.FromJSON a) => Aeson.Value -> Either Text a
 decodeValueEither v = case Aeson.fromJSON v of
@@ -361,6 +376,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction{..} = do
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount{..} = do
   let baccCurrencyCode = faccCurrencyCode
+  let baccName = faccName
   baccId <- RowId <$> HMS.lookup faccId accountMapping
   pure BluecoinAccount{..}
 
