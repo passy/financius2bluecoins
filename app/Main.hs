@@ -1,6 +1,8 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ExplicitForAll #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -264,40 +266,37 @@ mergeCategories
   => [BluecoinCategory]
   -> HMS.HashMap Text FinanciusCategory
   -> m (HMS.HashMap Text BluecoinCategory)
-mergeCategories bCategories fCategories = do
-  vals <- catMaybes <$> mapM extract bCategories
-  return $ HMS.fromList vals
-  where
-    extract
-      :: L.MonadLogger m
-      => BluecoinCategory
-      -> m (Maybe (Text, BluecoinCategory))
-    extract bcat@BluecoinCategory{..} =
-      case HMS.lookup bcatName fCategories of
-        Just FinanciusCategory{..} -> return $ Just (fcatId, bcat)
-        Nothing -> do
-          $(L.logError) $ "Could not find corresponding Financius category for '" <> bcatName <> "'."
-          return Nothing
+mergeCategories =
+  mergeLookupMaps bcatName fcatId
 
--- TODO: Generify
 mergeAccounts
   :: L.MonadLogger m
   => [BluecoinAccount]
   -> HMS.HashMap Text FinanciusAccount
   -> m (HMS.HashMap Text BluecoinAccount)
-mergeAccounts bAccounts fAccounts = do
-  vals <- catMaybes <$> mapM extract bAccounts
+mergeAccounts =
+  mergeLookupMaps baccName faccId
+
+mergeLookupMaps
+  :: forall a b (m :: * -> *).
+    (Eq a, Eq b, L.MonadLogger m)
+  => (b -> Text)
+  -> (a -> Text)
+  -> [b]
+  -> HMS.HashMap Text a
+  -> m (HMS.HashMap Text b)
+mergeLookupMaps extractName extractKey list' lookupMap = do
+  vals <- catMaybes <$> mapM extract list'
   return $ HMS.fromList vals
   where
     extract
-      :: L.MonadLogger m
-      => BluecoinAccount
-      -> m (Maybe (Text, BluecoinAccount))
-    extract facc@BluecoinAccount{..} =
-      case HMS.lookup baccName fAccounts of
-        Just FinanciusAccount{..} -> return $ Just (faccId, facc)
+      :: b
+      -> m (Maybe (Text, b))
+    extract element' =
+      case HMS.lookup (extractName element') lookupMap of
+        Just res -> return $ Just (extractKey res, element')
         Nothing -> do
-          $(L.logError) $ "Could not find corresponding Financius account for '" <> baccName <> "'."
+          $(L.logError) $ "Could not find corresponding lookup element '" <> extractName element' <> "'."
           return Nothing
 
 getBluecoinCategories
