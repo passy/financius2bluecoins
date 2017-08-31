@@ -362,7 +362,6 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction{..} = do
   let btxConversionRate = ftxExchangeRate
   let btxTransactionType = ftxTransactionType
 
-  -- TODO: Investigate out how ToId is used.
   btxAccount <- getBtxAccount baccs ftx
 
   -- FIXME: This doesn't actually fall back.
@@ -380,7 +379,8 @@ mkBluecoinAccount accountMapping FinanciusAccount{..} = do
   pure BluecoinAccount{..}
 
 writeBluecoinTransaction
-  :: (MonadIO io, L.MonadLogger io)
+  :: forall (io :: * -> *)
+  .  (MonadIO io, L.MonadLogger io)
   => SQL.Connection
   -> BluecoinTransaction
   -> io ()
@@ -397,32 +397,40 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
         Double a _ ->
           ($(L.logError) "FIXME - Omitting half of the transaction. Woops.") >> pure a
 
-  let sql :: SQL.Query =
-        "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
-        \ VALUES\
-        \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount, :date)"
-  liftIO $ SQL.executeNamed conn sql
-    [ ":itemID" := btxItemId
-    , ":amount" := amount
-    , ":notes" := btxNotes
-    , ":date" := btxDate
-    , ":accountID" := baccId account
-    , ":categoryID" := btxCategoryId
-    , ":hasPhoto" := (0 :: Int)
-    , ":labelCount" := length btxLabels
-    , ":conversionRateNew" := btxConversionRate
-    , ":transactionTypeID" := fromEnum btxTransactionType
-    , ":uidPairID" := (-1 :: Int)
-    , ":accountPairID" := baccId account
-    , ":accountReference" := (3 :: Int)
-    , ":deletedTransaction" := (6 :: Int)
-    -- TODO
-    , ":transactionCurrency" := ("GBP" :: Text)
-    , ":tags" := ("temptags" :: Text)
-    ]
-  rowId <- updateLastTransaction conn
+  write amount account
 
-  mapM_ (writeBluecoinLabel conn rowId) btxLabels
+  where
+    write
+      :: Integer
+      -> BluecoinAccount
+      -> io ()
+    write amount account = do
+      let sql :: SQL.Query =
+            "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
+            \ VALUES\
+            \ (:itemID, :amount, :notes, :accountID, :transactionCurrency, :conversionRateNew, :transactionTypeID, :categoryID, :tags, :accountReference, :accountPairID, :uidPairID, :deletedTransaction, :hasPhoto, :labelCount, :date)"
+      liftIO $ SQL.executeNamed conn sql
+        [ ":itemID" := btxItemId
+        , ":amount" := amount
+        , ":notes" := btxNotes
+        , ":date" := btxDate
+        , ":categoryID" := btxCategoryId
+        , ":hasPhoto" := (0 :: Int)
+        , ":labelCount" := length btxLabels
+        , ":conversionRateNew" := btxConversionRate
+        , ":transactionTypeID" := fromEnum btxTransactionType
+        , ":uidPairID" := (-1 :: Int)
+        , ":accountID" := baccId account
+        , ":accountPairID" := baccId account
+        , ":transactionCurrency" := baccCurrencyCode account
+        , ":accountReference" := (3 :: Int)
+        , ":deletedTransaction" := (6 :: Int)
+        -- TODO
+        , ":tags" := ("temptags" :: Text)
+        ]
+      rowId <- liftIO $ RowId <$> SQL.lastInsertRowId conn
+      setTxPairId conn rowId rowId
+      mapM_ (writeBluecoinLabel conn rowId) btxLabels
 
 writeBluecoinLabel
   :: (MonadIO io, L.MonadLogger io)
@@ -439,18 +447,16 @@ writeBluecoinLabel conn (RowId rowId) label = do
      [ ":label" := label
      , ":rowId" := rowId ]
 
--- | Transactions are self-referential, so we need to update written transactions once.
--- If you run this without having inserted a transaction before, you'll be in big trouble.
-updateLastTransaction
+setTxPairId
   :: (MonadIO io, L.MonadLogger io)
   => SQL.Connection
-  -> io RowId
-updateLastTransaction conn = do
+  -> RowId
+  -> RowId
+  -> io ()
+setTxPairId conn txId pairId = do
   let sql :: SQL.Query =
-        "UPDATE TRANSACTIONSTABLE SET uidPairID = :lastId WHERE transactionsTableID = :lastId"
-
-  lastRowId <- liftIO $ SQL.lastInsertRowId conn
+        "UPDATE TRANSACTIONSTABLE SET uidPairID = :pairId WHERE transactionsTableID = :txId"
   liftIO $ SQL.executeNamed conn sql
-    [ ":lastId" := lastRowId
+    [ ":txId" := txId
+    , ":uidPairID" := pairId
     ]
-  return $ RowId lastRowId
