@@ -397,14 +397,17 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
         Double a _ ->
           ($(L.logError) "FIXME - Omitting half of the transaction. Woops.") >> pure a
 
-  write amount account
+  txId <- write amount account account
+  setTxPairId conn txId txId
+  mapM_ (writeBluecoinLabel conn txId) btxLabels
 
   where
     write
       :: Integer
       -> BluecoinAccount
-      -> io ()
-    write amount account = do
+      -> BluecoinAccount
+      -> io RowId
+    write amount srcAccount destAccount = do
       let sql :: SQL.Query =
             "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
             \ VALUES\
@@ -420,17 +423,15 @@ writeBluecoinTransaction conn BluecoinTransaction{..} = do
         , ":conversionRateNew" := btxConversionRate
         , ":transactionTypeID" := fromEnum btxTransactionType
         , ":uidPairID" := (-1 :: Int)
-        , ":accountID" := baccId account
-        , ":accountPairID" := baccId account
-        , ":transactionCurrency" := baccCurrencyCode account
+        , ":accountID" := baccId srcAccount
+        , ":accountPairID" := baccId destAccount
+        , ":transactionCurrency" := baccCurrencyCode srcAccount
         , ":accountReference" := (3 :: Int)
         , ":deletedTransaction" := (6 :: Int)
         -- TODO
         , ":tags" := ("temptags" :: Text)
         ]
-      rowId <- liftIO $ RowId <$> SQL.lastInsertRowId conn
-      setTxPairId conn rowId rowId
-      mapM_ (writeBluecoinLabel conn rowId) btxLabels
+      liftIO $ RowId <$> SQL.lastInsertRowId conn
 
 writeBluecoinLabel
   :: (MonadIO io, L.MonadLogger io)
