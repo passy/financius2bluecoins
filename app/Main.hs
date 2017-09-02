@@ -378,7 +378,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
 getBtxCategoryId
   :: HMS.HashMap Text BluecoinCategory -> FinanciusTransaction -> Maybe RowId
 getBtxCategoryId bcats FinanciusTransaction {..} = do
-  cat <- ((flip HMS.lookup bcats) =<< ftxCategoryId) <|> Just transferCategory
+  cat <- ((`HMS.lookup` bcats) =<< ftxCategoryId) <|> Just transferCategory
   return $ bcatId cat
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
