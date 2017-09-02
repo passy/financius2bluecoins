@@ -384,22 +384,29 @@ writeBluecoinTransaction
   => SQL.Connection
   -> BluecoinTransaction
   -> io ()
-writeBluecoinTransaction conn BluecoinTransaction{..} = do
+writeBluecoinTransaction conn btx@BluecoinTransaction{..} = do
   let amount = case btxTransactionType of
         Expense -> negate btxAmount
         Income -> btxAmount
-        -- TODO
         Transfer -> 0
 
-  -- FIXME: This obviously ignores half of the transaction at the moment.
-  account <- case btxAccount of
-        Single a -> pure a
-        Double a _ ->
-          ($(L.logError) "FIXME - Omitting half of the transaction. Woops.") >> pure a
+  txIds <- case btxAccount of
+        Single account -> do
+          txId <- write amount account account
+          setTxPairId conn txId txId
+          return [txId]
+        Double srcAccount destAccount ->
+          -- I know this is a very lazy encoding of this invariant ... Maybe MonadPlus at least?
+          if btxTransactionType /= Transfer then
+            ($(L.logError) $ "Invalid Double transaction with non-transfer type: " <> show btx) >> return []
+          else do
+            srcTxId <- write (negate btxAmount) srcAccount destAccount
+            destTxId <- write btxAmount destAccount srcAccount
+            return [srcTxId, destTxId]
 
-  txId <- write amount account account
-  setTxPairId conn txId txId
-  mapM_ (writeBluecoinLabel conn txId) btxLabels
+  forM_ btxLabels $ \label ->
+    forM_ txIds $ \tx ->
+       writeBluecoinLabel conn tx label
 
   where
     write
