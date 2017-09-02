@@ -184,17 +184,16 @@ getOrCreate conn getFn createFn = do
       RowId <$> SQL.lastInsertRowId conn
 
 getOrCreateItem :: MonadIO io => SQL.Connection -> Text -> io RowId
-getOrCreateItem conn name =
-  getOrCreate
-    conn
-    ( \c -> SQL.query c
-                      "SELECT itemTableId FROM ITEMTABLE WHERE itemName = ?"
+getOrCreateItem conn name = getOrCreate
+  conn
+  ( \c -> SQL.query c
+                    "SELECT itemTableId FROM ITEMTABLE WHERE itemName = ?"
+                    (SQL.Only name)
+  )
+  ( \c -> SQL.execute c
+                      "INSERT INTO ITEMTABLE (itemName) VALUES (?)"
                       (SQL.Only name)
-    )
-    ( \c -> SQL.execute c
-                        "INSERT INTO ITEMTABLE (itemName) VALUES (?)"
-                        (SQL.Only name)
-    )
+  )
 
 toLookupMap
   :: (Hashable.Hashable b, Eq b)
@@ -265,17 +264,12 @@ main = L.runStderrLoggingT $ do
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <-
-    forM transactions $ \tx ->
-      case Aeson.fromJSON tx of
-        Aeson.Success ftx -> runMaybeT $ mkBluecoinTransaction
-          conn
-          mergedAccounts
-          mergedCategories
-          fTags
-          ftx
-        Aeson.Error e -> do
-          $(L.logError) $ "Couldn't parse transaction: " <> show e
-          return Nothing
+    forM transactions $ \tx -> case Aeson.fromJSON tx of
+      Aeson.Success ftx -> runMaybeT
+        $ mkBluecoinTransaction conn mergedAccounts mergedCategories fTags ftx
+      Aeson.Error e -> do
+        $(L.logError) $ "Couldn't parse transaction: " <> show e
+        return Nothing
 
   $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
@@ -340,24 +334,23 @@ getBtxAccount
   -> MaybeT m TransactionBundle
 getBtxAccount baccs FinanciusTransaction {..} =
   -- My Lord, this turned out really nicely.
-  case ftxTransactionType of
-    Expense  -> Single <$> lookup ftxAccountFromId
-    Income   -> Single <$> lookup ftxAccountToId
-    Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
+                                                case ftxTransactionType of
+  Expense  -> Single <$> lookup ftxAccountFromId
+  Income   -> Single <$> lookup ftxAccountToId
+  Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
  where
   lookup :: L.MonadLogger m => Maybe Text -> MaybeT m BluecoinAccount
-  lookup field =
-    MaybeT $ case flip HMS.lookup baccs =<< field of
-      Nothing
-        | isJust ftxAccountFromId
-        -> (  $(L.logError)
-           $  "Invariant violation: account not in mapping list: "
-           <> show field
-           )
-          >> pure Nothing
-        | otherwise
-        -> pure Nothing
-      Just btxAccount -> pure $ Just btxAccount
+  lookup field = MaybeT $ case flip HMS.lookup baccs =<< field of
+    Nothing
+      | isJust ftxAccountFromId
+      -> (  $(L.logError)
+         $  "Invariant violation: account not in mapping list: "
+         <> show field
+         )
+        >> pure Nothing
+      | otherwise
+      -> pure Nothing
+    Just btxAccount -> pure $ Just btxAccount
 
 mkBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
@@ -383,9 +376,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
   -- FIXME: This doesn't actually fall back.
   btxCategoryId <-
     MaybeT
-      $ case
-          HMS.lookup (fromMaybe transferCategoryName ftxCategoryId) bcats
-        of
+      $ case HMS.lookup (fromMaybe transferCategoryName ftxCategoryId) bcats of
           Nothing ->
             (  $(L.logError)
               $  "Invariant violation: category id not populated: "
