@@ -38,6 +38,9 @@ import qualified Data.Hashable as Hashable
 transferCategory :: BluecoinCategory
 transferCategory = BluecoinCategory (RowId 3) "(Transfer)"
 
+newAccountCategory :: BluecoinCategory
+newAccountCategory = BluecoinCategory (RowId 2) "(New Account)"
+
 -- * Definitions
 
 data Args = Args
@@ -377,9 +380,13 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
 
 getBtxCategoryId
   :: HMS.HashMap Text BluecoinCategory -> FinanciusTransaction -> Maybe RowId
-getBtxCategoryId bcats FinanciusTransaction {..} = do
-  cat <- ((`HMS.lookup` bcats) =<< ftxCategoryId) <|> Just transferCategory
-  return $ bcatId cat
+getBtxCategoryId bcats FinanciusTransaction {..}
+  -- This is a very special case that only applies to Financius, of course.
+  | ftxNote == "Account balance update" =
+    return $ bcatId newAccountCategory
+  | otherwise = do
+    cat <- ((`HMS.lookup` bcats) =<< ftxCategoryId) <|> Just transferCategory
+    return $ bcatId cat
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount {..} = do
