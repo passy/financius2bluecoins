@@ -415,6 +415,8 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       else do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
         destTxId <- write btxAmount destAccount srcAccount
+        setTxPairId conn srcTxId destTxId
+        setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
 
   -- I'm a bit disappointed in myself. There's clearly a way nicer way
