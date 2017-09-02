@@ -411,15 +411,13 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       txId <- write amount account account
       setTxPairId conn txId txId
       return [txId]
-    Double srcAccount destAccount ->
-      -- I know this is a very lazy encoding of this invariant ... Maybe MonadPlus at least?
-                                     if btxTransactionType /= Transfer
-      then
-        (  $(L.logError)
+    Double srcAccount destAccount -> if btxTransactionType /= Transfer
+      then do
+      -- I know this is a very lazy way of handling this invariant.
+        $(L.logError)
           $  "Invalid Double transaction with non-transfer type: "
           <> show btx
-          )
-          >> return []
+        return []
       else do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
         destTxId <- write btxAmount destAccount srcAccount
