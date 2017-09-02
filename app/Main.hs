@@ -184,7 +184,7 @@ getOrCreate conn getFn createFn = do
       RowId <$> SQL.lastInsertRowId conn
 
 getOrCreateItem :: MonadIO io => SQL.Connection -> Text -> io RowId
-getOrCreateItem conn name = do
+getOrCreateItem conn name =
   getOrCreate
     conn
     ( \c -> SQL.query c
@@ -258,14 +258,14 @@ main = L.runStderrLoggingT $ do
 
   let fTags :: HMS.HashMap Text FinanciusTag = maybe
         (error "parsing tags failed")
-        (toFinanciusTagLookupMap)
+        toFinanciusTagLookupMap
         (decodeJSONArray "tags" financiusJson)
 
   let transactions =
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
   maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <-
-    forM transactions $ \tx -> do
+    forM transactions $ \tx ->
       case Aeson.fromJSON tx of
         Aeson.Success ftx -> runMaybeT $ mkBluecoinTransaction
           conn
@@ -338,7 +338,7 @@ getBtxAccount
   => HMS.HashMap Text BluecoinAccount
   -> FinanciusTransaction
   -> MaybeT m TransactionBundle
-getBtxAccount baccs FinanciusTransaction {..} = do
+getBtxAccount baccs FinanciusTransaction {..} =
   -- My Lord, this turned out really nicely.
   case ftxTransactionType of
     Expense  -> Single <$> lookup ftxAccountFromId
@@ -346,8 +346,8 @@ getBtxAccount baccs FinanciusTransaction {..} = do
     Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
  where
   lookup :: L.MonadLogger m => Maybe Text -> MaybeT m BluecoinAccount
-  lookup field = do
-    MaybeT $ case (flip HMS.lookup) baccs =<< field of
+  lookup field =
+    MaybeT $ case flip HMS.lookup baccs =<< field of
       Nothing
         | isJust ftxAccountFromId
         -> (  $(L.logError)
@@ -372,7 +372,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
   let btxAmount = ftxAmount * 10000
-  let btxDate   = PClock.posixSecondsToUTCTime $ realToFrac $ ftxDate `div` 1000
+  let btxDate   = PClock.posixSecondsToUTCTime . realToFrac $ ftxDate `div` 1000
   let btxLabels :: [Text] =
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
@@ -384,7 +384,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
   btxCategoryId <-
     MaybeT
       $ case
-          (flip HMS.lookup) bcats (fromMaybe transferCategoryName ftxCategoryId)
+          HMS.lookup (fromMaybe transferCategoryName ftxCategoryId) bcats
         of
           Nothing ->
             (  $(L.logError)
@@ -394,7 +394,7 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
               >> pure Nothing
           Just BluecoinCategory {..} -> pure $ Just bcatId
 
-  return $ BluecoinTransaction {..}
+  return BluecoinTransaction {..}
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount {..} = do
