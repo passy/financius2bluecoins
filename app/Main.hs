@@ -469,4 +469,4 @@ setTxPairId conn txId pairId = do
   let
     sql :: SQL.Query
       = "UPDATE TRANSACTIONSTABLE SET uidPairID = :pairId WHERE transactionsTableID = :txId"
-  liftIO $ SQL.executeNamed conn sql [":txId" := txId, ":uidPairID" := pairId]
+  liftIO $ SQL.executeNamed conn sql [":txId" := txId, ":pairId" := pairId]
