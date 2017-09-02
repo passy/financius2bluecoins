@@ -381,11 +381,9 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
 getBtxCategoryId
   :: HMS.HashMap Text BluecoinCategory -> FinanciusTransaction -> Maybe RowId
 getBtxCategoryId bcats FinanciusTransaction {..}
-  -- This is a very special case that only applies to Financius, of course.
-  | ftxNote == "Account balance update" =
-    return $ bcatId newAccountCategory
+  | ftxNote == "Account balance update" = return $ bcatId newAccountCategory
   | otherwise = do
-    cat <- ((`HMS.lookup` bcats) =<< ftxCategoryId) <|> Just transferCategory
+    cat <- ((`HMS.lookup`bcats) =<< ftxCategoryId) <|> Just transferCategory
     return $ bcatId cat
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
@@ -422,7 +420,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       else do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
         destTxId <- write btxAmount destAccount srcAccount
-        setTxPairId conn srcTxId destTxId
+        setTxPairId conn srcTxId  destTxId
         setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
 
