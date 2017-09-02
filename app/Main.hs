@@ -35,8 +35,8 @@ import qualified Data.Hashable as Hashable
 
 -- * Constants
 
-transferCategoryName :: Text
-transferCategoryName = "(Transfer)"
+transferCategory :: BluecoinCategory
+transferCategory = BluecoinCategory (RowId 3) "(Transfer)"
 
 -- * Definitions
 
@@ -327,14 +327,13 @@ decodeValueEither v = case Aeson.fromJSON v of
   Aeson.Success res -> pure res
   Aeson.Error   e   -> Left $ T.pack e
 
+-- | My Lord, this turned out really nicely.
 getBtxAccount
   :: L.MonadLogger m
   => HMS.HashMap Text BluecoinAccount
   -> FinanciusTransaction
   -> MaybeT m TransactionBundle
-getBtxAccount baccs FinanciusTransaction {..} =
-  -- My Lord, this turned out really nicely.
-                                                case ftxTransactionType of
+getBtxAccount baccs FinanciusTransaction {..} = case ftxTransactionType of
   Expense  -> Single <$> lookup ftxAccountFromId
   Income   -> Single <$> lookup ftxAccountToId
   Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
@@ -372,20 +371,15 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
   let btxTransactionType = ftxTransactionType
 
   btxAccount    <- getBtxAccount baccs ftx
-
-  -- FIXME: This doesn't actually fall back.
-  btxCategoryId <-
-    MaybeT
-      $ case HMS.lookup (fromMaybe transferCategoryName ftxCategoryId) bcats of
-          Nothing ->
-            (  $(L.logError)
-              $  "Invariant violation: category id not populated: "
-              <> show ftxCategoryId
-              )
-              >> pure Nothing
-          Just BluecoinCategory {..} -> pure $ Just bcatId
+  btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
+
+getBtxCategoryId
+  :: HMS.HashMap Text BluecoinCategory -> FinanciusTransaction -> Maybe RowId
+getBtxCategoryId bcats FinanciusTransaction {..} = do
+  cat <- ((flip HMS.lookup bcats) =<< ftxCategoryId) <|> Just transferCategory
+  return $ bcatId cat
 
 mkBluecoinAccount :: AccountMapping -> FinanciusAccount -> Maybe BluecoinAccount
 mkBluecoinAccount accountMapping FinanciusAccount {..} = do
@@ -413,7 +407,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       return [txId]
     Double srcAccount destAccount -> if btxTransactionType /= Transfer
       then do
-      -- I know this is a very lazy way of handling this invariant.
+-- I know this is a very lazy way of handling this invariant.
         $(L.logError)
           $  "Invalid Double transaction with non-transfer type: "
           <> show btx
@@ -423,8 +417,9 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
         destTxId <- write btxAmount destAccount srcAccount
         return [srcTxId, destTxId]
 
-  forM_ btxLabels
-    $ \label -> forM_ txIds $ \tx -> writeBluecoinLabel conn tx label
+  -- I'm a bit disappointed in myself. There's clearly a way nicer way
+  -- for doing this that I can't think of right now.
+  forM_ btxLabels $ \label -> forM_ txIds (writeBluecoinLabel conn label)
  where
   write :: Integer -> BluecoinAccount -> BluecoinAccount -> io RowId
   write amount srcAccount destAccount = do
@@ -457,8 +452,8 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
     liftIO $ RowId <$> SQL.lastInsertRowId conn
 
 writeBluecoinLabel
-  :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> RowId -> Text -> io ()
-writeBluecoinLabel conn (RowId rowId) label = do
+  :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> Text -> RowId -> io ()
+writeBluecoinLabel conn label (RowId rowId) = do
   let
     sql :: SQL.Query
       = "INSERT INTO LABELSTABLE (labelName, transactionIDLabels)\
