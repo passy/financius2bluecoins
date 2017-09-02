@@ -59,7 +59,7 @@ data BluecoinTransaction = BluecoinTransaction
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
   , btxConversionRate :: Double
-  , btxTransactionType :: TransactionType
+  , btxTransactionType :: BluecoinTransactionType
   } deriving (Eq, Show)
 
 data BluecoinAccount = BluecoinAccount
@@ -121,7 +121,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxCategoryId :: Maybe Text
   , ftxTagIds :: [Text]
   , ftxExchangeRate :: Double
-  , ftxTransactionType :: TransactionType
+  , ftxTransactionType :: FinanciusTransactionType
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -138,24 +138,34 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "exchange_rate"
         <*> (fromFtxType =<< o .: "transaction_type")
 
-fromFtxType :: Integer -> Aeson.Parser TransactionType
-fromFtxType 1 = pure Expense
-fromFtxType 2 = pure Income
-fromFtxType 3 = pure Transfer
+fromFtxType :: Integer -> Aeson.Parser FinanciusTransactionType
+fromFtxType 1 = pure FtxExpense
+fromFtxType 2 = pure FtxIncome
+fromFtxType 3 = pure FtxTransfer
 fromFtxType _ = fail "Invalid ftx transaction type"
 
-data TransactionType = Transfer | Income | Expense
+data FinanciusTransactionType = FtxTransfer | FtxIncome | FtxExpense
   deriving (Eq, Show)
 
-instance Enum TransactionType where
-  fromEnum Transfer = 5
-  fromEnum Income = 4
-  fromEnum Expense = 3
+data BluecoinTransactionType = BtxTransfer | BtxIncome | BtxExpense | BtxNewAccount
+  deriving (Eq, Show)
 
-  toEnum 5 = Transfer
-  toEnum 4 = Income
-  toEnum 3 = Expense
+instance Enum BluecoinTransactionType where
+  fromEnum BtxTransfer = 5
+  fromEnum BtxIncome = 4
+  fromEnum BtxExpense = 3
+  fromEnum BtxNewAccount = 2
+
+  toEnum 5 = BtxTransfer
+  toEnum 4 = BtxIncome
+  toEnum 3 = BtxExpense
+  toEnum 2 = BtxNewAccount
   toEnum i = error $ "Invalid transaction type " <> show i
+
+ftxToBtxType :: FinanciusTransactionType -> BluecoinTransactionType
+ftxToBtxType FtxTransfer = BtxTransfer
+ftxToBtxType FtxIncome   = BtxIncome
+ftxToBtxType FtxExpense  = BtxExpense
 
 newtype RowId = RowId { rowId :: Int64 }
   deriving (Show, Eq)
@@ -337,9 +347,9 @@ getBtxAccount
   -> FinanciusTransaction
   -> MaybeT m TransactionBundle
 getBtxAccount baccs FinanciusTransaction {..} = case ftxTransactionType of
-  Expense  -> Single <$> lookup ftxAccountFromId
-  Income   -> Single <$> lookup ftxAccountToId
-  Transfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
+  FtxExpense  -> Single <$> lookup ftxAccountFromId
+  FtxIncome   -> Single <$> lookup ftxAccountToId
+  FtxTransfer -> Double <$> lookup ftxAccountFromId <*> lookup ftxAccountToId
  where
   lookup :: L.MonadLogger m => Maybe Text -> MaybeT m BluecoinAccount
   lookup field = MaybeT $ case flip HMS.lookup baccs =<< field of
@@ -371,12 +381,19 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
   let btxLabels :: [Text] =
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
-  let btxTransactionType = ftxTransactionType
+  let btxTransactionType = getBtxType ftx
 
   btxAccount    <- getBtxAccount baccs ftx
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
+
+getBtxType :: FinanciusTransaction -> BluecoinTransactionType
+getBtxType FinanciusTransaction {..}
+  | ftxNote == "Account balance update" && ftxCategoryId == empty
+  = BtxNewAccount
+  | otherwise
+  = ftxToBtxType ftxTransactionType
 
 getBtxCategoryId
   :: HMS.HashMap Text BluecoinCategory -> FinanciusTransaction -> Maybe RowId
@@ -401,16 +418,17 @@ writeBluecoinTransaction
   -> io ()
 writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
   let amount = case btxTransactionType of
-        Expense  -> negate btxAmount
-        Income   -> btxAmount
-        Transfer -> 0
+        BtxExpense    -> negate btxAmount
+        BtxIncome     -> btxAmount
+        BtxNewAccount -> btxAmount
+        BtxTransfer   -> 0
 
   txIds <- case btxAccount of
     Single account -> do
       txId <- write amount account account
       setTxPairId conn txId txId
       return [txId]
-    Double srcAccount destAccount -> if btxTransactionType /= Transfer
+    Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
       then do
 -- I know this is a very lazy way of handling this invariant.
         $(L.logError)
