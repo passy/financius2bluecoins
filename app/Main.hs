@@ -258,7 +258,6 @@ main = L.runStderrLoggingT $ do
   financiusJson <- liftIO . readFile $ financiusFile args
   conn          <- liftIO . SQL.open $ bluecoinFile args
 
-
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
         (error "parsing accounts failed")
@@ -283,16 +282,21 @@ main = L.runStderrLoggingT $ do
         toFinanciusTagLookupMap
         (decodeJSONArray "tags" financiusJson)
 
+  let filterModelState = V.filter (\FinanciusTransaction{..} -> ftxModelState /= FtxModelStateInvalid)
+
   let transactions =
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
-  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <-
-    forM transactions $ \tx -> case Aeson.fromJSON tx of
-      Aeson.Success ftx -> runMaybeT
-        $ mkBluecoinTransaction conn mergedAccounts mergedCategories fTags ftx
+  ftxs :: V.Vector FinanciusTransaction <-
+    fmap vecCatMaybes <$> forM transactions $ \tx -> case Aeson.fromJSON tx of
+      Aeson.Success ftx -> return ftx
       Aeson.Error e -> do
         $(L.logError) $ "Couldn't parse transaction: " <> show e
         return Nothing
+
+  let filteredFtxs = filterModelState ftxs
+
+  maybeBtxs <- mapM (runMaybeT . mkBluecoinTransaction conn mergedAccounts mergedCategories fTags) filteredFtxs
 
   $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
