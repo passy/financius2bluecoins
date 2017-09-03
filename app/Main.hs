@@ -122,6 +122,7 @@ data FinanciusTransaction = FinanciusTransaction
   , ftxTagIds :: [Text]
   , ftxExchangeRate :: Double
   , ftxTransactionType :: FinanciusTransactionType
+  , ftxModelState :: FinanciusModelState
   } deriving (Eq, Show)
 
 instance Aeson.FromJSON FinanciusTransaction where
@@ -137,6 +138,7 @@ instance Aeson.FromJSON FinanciusTransaction where
         <*> o .: "tag_ids"
         <*> o .: "exchange_rate"
         <*> (fromFtxType =<< o .: "transaction_type")
+        <*> (fromFtxModelState =<< o .: "model_state")
 
 fromFtxType :: Integer -> Aeson.Parser FinanciusTransactionType
 fromFtxType 1 = pure FtxExpense
@@ -144,7 +146,15 @@ fromFtxType 2 = pure FtxIncome
 fromFtxType 3 = pure FtxTransfer
 fromFtxType _ = fail "Invalid ftx transaction type"
 
+fromFtxModelState :: Integer -> Aeson.Parser FinanciusModelState
+fromFtxModelState 1 = pure FtxModelStateValid
+fromFtxModelState 2 = pure FtxModelStateInvalid
+fromFtxModelState _ = pure FtxModelStateUnknown
+
 data FinanciusTransactionType = FtxTransfer | FtxIncome | FtxExpense
+  deriving (Eq, Show)
+
+data FinanciusModelState = FtxModelStateValid | FtxModelStateInvalid | FtxModelStateUnknown
   deriving (Eq, Show)
 
 data BluecoinTransactionType = BtxTransfer | BtxIncome | BtxExpense | BtxNewAccount
