@@ -282,21 +282,19 @@ main = L.runStderrLoggingT $ do
         toFinanciusTagLookupMap
         (decodeJSONArray "tags" financiusJson)
 
-  let filterModelState = V.filter (\FinanciusTransaction{..} -> ftxModelState /= FtxModelStateInvalid)
-
   let transactions =
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
 
-  ftxs :: V.Vector FinanciusTransaction <-
-    fmap vecCatMaybes <$> forM transactions $ \tx -> case Aeson.fromJSON tx of
-      Aeson.Success ftx -> return ftx
+  maybeFtxs :: V.Vector (Maybe FinanciusTransaction) <-
+    forM transactions $ \tx -> case Aeson.fromJSON tx of
+      Aeson.Success (ftx@FinanciusTransaction{ftxModelState})
+        | ftxModelState /= FtxModelStateInvalid -> return $ Just ftx
+        | otherwise -> return Nothing
       Aeson.Error e -> do
         $(L.logError) $ "Couldn't parse transaction: " <> show e
         return Nothing
 
-  let filteredFtxs = filterModelState ftxs
-
-  maybeBtxs <- mapM (runMaybeT . mkBluecoinTransaction conn mergedAccounts mergedCategories fTags) filteredFtxs
+  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- fmap join <$> V.mapM (\m -> forM m (runMaybeT . mkBluecoinTransaction conn mergedAccounts mergedCategories fTags)) maybeFtxs
 
   $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
