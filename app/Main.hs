@@ -442,14 +442,16 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       return [txId]
     Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
       then do
--- I know this is a very lazy way of handling this invariant.
+      -- I know this is a very lazy way of handling this invariant.
         $(L.logError)
           $  "Invalid Double transaction with non-transfer type: "
           <> show btx
         return []
       else do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
-        destTxId <- write btxAmount destAccount srcAccount
+        -- This `round` makes me uneasy, but I think it should be the right thing here as it's only used
+        -- to approximate the amount to cents / pence.
+        destTxId <- write (round ((fromIntegral btxAmount) * btxConversionRate)) destAccount srcAccount
         setTxPairId conn srcTxId  destTxId
         setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
