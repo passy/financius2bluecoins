@@ -42,7 +42,6 @@ dependencies:
   - time
   - hashable
   - transformers
-  - eurofxref
   - zip-archive
 
 executables:

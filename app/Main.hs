@@ -22,6 +22,8 @@ import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Fail (fail)
 
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Types as Aeson
 import qualified Control.Monad.Logger as L
 import qualified Data.Vector as V
@@ -32,6 +34,7 @@ import qualified Data.Text as T
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Hashable as Hashable
+import qualified Codec.Archive.Zip as Zip
 
 -- * Constants
 
@@ -46,6 +49,7 @@ newAccountCategory = BluecoinCategory (RowId 2) "(New Account)"
 data Args = Args
   { financiusFile :: FilePath
   , bluecoinFile :: FilePath
+  , eurofxrefFile :: Maybe FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
 type AccountMapping = HMS.HashMap Text Int64
@@ -251,12 +255,21 @@ decodeJSONArray
 decodeJSONArray key_ json = sequenceA $ join <$> sequenceA
   (fmap (hush . decodeValueEither) <$> (json ^? key key_ . _Array))
 
+readFxRefFile :: FilePath -> IO (Maybe BSL.ByteString)
+readFxRefFile path = do
+  archive <- Zip.toArchive <$> BSL.readFile path
+  return $ extractCSV archive
+  where
+    extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
+
+
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
   args :: Args  <- getRecord "financius2bluecoin"
   financiusJson <- liftIO . readFile $ financiusFile args
   conn          <- liftIO . SQL.open $ bluecoinFile args
+  fxref :: Maybe BSL.ByteString <- liftIO . foldMap readFxRefFile $ eurofxrefFile args
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
