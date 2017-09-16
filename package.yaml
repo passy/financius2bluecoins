@@ -42,6 +42,8 @@ dependencies:
   - time
   - hashable
   - transformers
+  - eurofxref
+  - zip-archive
 
 executables:
   financius2bluecoin:
