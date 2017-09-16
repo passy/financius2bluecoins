@@ -250,12 +250,9 @@ vecCatMaybes = V.concatMap f
   f (Just a) = V.singleton a
   f Nothing  = V.empty
 
--- TODO: Figure out how to get rid of that ridiculous join/sequence ... sequence?
--- This smells traverse/foldMap to me.
 decodeJSONArray
   :: (AsValue s, Aeson.FromJSON a) => Text -> s -> Maybe (V.Vector a)
-decodeJSONArray key_ json = sequenceA $ join <$> sequenceA
-  (fmap (hush . decodeValueEither) <$> (json ^? key key_ . _Array))
+decodeJSONArray key_ json = foldMap (hush . decodeValueEither) <$> (json ^? key key_ . _Array)
 
 readFxRefFile :: FilePath -> IO (Maybe BSL.ByteString)
 readFxRefFile path = do
