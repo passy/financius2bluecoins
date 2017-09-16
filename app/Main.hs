@@ -22,7 +22,6 @@ import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Fail (fail)
 
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Types as Aeson
 import qualified Control.Monad.Logger as L
@@ -252,23 +251,25 @@ vecCatMaybes = V.concatMap f
 
 decodeJSONArray
   :: (AsValue s, Aeson.FromJSON a) => Text -> s -> Maybe (V.Vector a)
-decodeJSONArray key_ json = foldMap (hush . decodeValueEither) <$> (json ^? key key_ . _Array)
+decodeJSONArray key_ json =
+  foldMap (hush . decodeValueEither) <$> (json ^? key key_ . _Array)
 
 readFxRefFile :: FilePath -> IO (Maybe BSL.ByteString)
 readFxRefFile path = do
   archive <- Zip.toArchive <$> BSL.readFile path
   return $ extractCSV archive
-  where
-    extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
+ where
+  extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
 
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
-  args :: Args  <- getRecord "financius2bluecoin"
-  financiusJson <- liftIO . readFile $ financiusFile args
-  conn          <- liftIO . SQL.open $ bluecoinFile args
-  fxref :: Maybe BSL.ByteString <- liftIO . foldMap readFxRefFile $ eurofxrefFile args
+  args :: Args                  <- getRecord "financius2bluecoin"
+  financiusJson                 <- liftIO . readFile $ financiusFile args
+  conn                          <- liftIO . SQL.open $ bluecoinFile args
+  fxref :: Maybe BSL.ByteString <-
+    liftIO . foldMap readFxRefFile $ eurofxrefFile args
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
@@ -299,14 +300,26 @@ main = L.runStderrLoggingT $ do
 
   maybeFtxs :: V.Vector (Maybe FinanciusTransaction) <-
     forM transactions $ \tx -> case Aeson.fromJSON tx of
-      Aeson.Success (ftx@FinanciusTransaction{ftxModelState})
+      Aeson.Success (ftx@FinanciusTransaction { ftxModelState })
         | ftxModelState /= FtxModelStateInvalid -> return $ Just ftx
-        | otherwise -> return Nothing
+        | otherwise                             -> return Nothing
       Aeson.Error e -> do
         $(L.logError) $ "Couldn't parse transaction: " <> show e
         return Nothing
 
-  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- fmap join <$> V.mapM (\m -> forM m (runMaybeT . mkBluecoinTransaction conn mergedAccounts mergedCategories fTags)) maybeFtxs
+  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <-
+    fmap join
+      <$> V.mapM
+            ( \m -> forM
+              m
+              ( runMaybeT
+              . mkBluecoinTransaction conn
+                                      mergedAccounts
+                                      mergedCategories
+                                      fTags
+              )
+            )
+            maybeFtxs
 
   $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
@@ -454,7 +467,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       return [txId]
     Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
       then do
-      -- I know this is a very lazy way of handling this invariant.
+        -- I know this is a very lazy way of handling this invariant.
         $(L.logError)
           $  "Invalid Double transaction with non-transfer type: "
           <> show btx
@@ -463,7 +476,10 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
         -- This `round` makes me uneasy, but I think it should be the right thing here as it's only used
         -- to approximate the amount to cents / pence.
-        destTxId <- write (round ((fromIntegral btxAmount) * btxConversionRate)) destAccount srcAccount
+        destTxId <- write
+          (round ((fromIntegral btxAmount) * btxConversionRate))
+          destAccount
+          srcAccount
         setTxPairId conn srcTxId  destTxId
         setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
