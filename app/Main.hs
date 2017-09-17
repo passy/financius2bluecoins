@@ -96,26 +96,32 @@ data FinanciusTag = FinanciusTag
   , ftagName :: Text
   } deriving (Eq, Show)
 
+newtype FxDate = FxDate Calendar.Day
+  deriving (Eq, Show)
+
+instance Hashable.Hashable FxDate where
+  hash (FxDate d) =
+    let (x, y, z) = Calendar.toGregorian d
+    in fromIntegral $ (32 * x + 32 * fromIntegral y + 32 * fromIntegral z)
+
+  hashWithSalt salt v = (Hashable.hash v) * salt
+
 -- | A fx rate record for a given day, based on the ECB CSV data.
 data FxRecord = FxRecord
-  { fxDate :: Calendar.Day
+  { fxDate :: FxDate
   , fxUSD :: Double
   , fxGBP :: Double
   , fxEUR :: Double
   } deriving (Eq, Show)
 
-instance Csv.FromRecord FxRecord where
-  parseRecord v =
-    FxRecord <$> (parseDate =<< v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
-    where
-      parseDate :: T.Text -> Csv.Parser Calendar.Day
-      parseDate v' =
-        parseEither $
-          let (year, v'') = T.break (== '-') v'
-              (month, v''') = T.break (== '-') $ T.drop 1 v''
-              (day, _) = T.break (== '-') $ T.drop 1 v'''
-          in Calendar.fromGregorian <$> dec year <*> dec month <*> dec day
+instance Csv.FromField FxDate where
+  parseField v' = parseEither $
+        let (year, v'') = T.break (== '-') $ decodeUtf8 v'
+            (month, v''') = T.break (== '-') $ T.drop 1 v''
+            (day, _) = T.break (== '-') $ T.drop 1 v'''
+        in FxDate <$> (Calendar.fromGregorian <$> dec year <*> dec month <*> dec day)
 
+    where
       dec :: forall b. Integral b => Text -> Either String.String b
       dec = (fst <$>) . TRead.decimal . traceShowId
 
@@ -123,6 +129,10 @@ instance Csv.FromRecord FxRecord where
       parseEither = \case
         Left _ -> mzero
         Right b -> pure b
+
+instance Csv.FromRecord FxRecord where
+  parseRecord v =
+    FxRecord <$> (v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
 
 data TransactionBundle = Single BluecoinAccount | Double BluecoinAccount BluecoinAccount
   deriving (Show, Eq)
@@ -304,11 +314,12 @@ main = L.runStderrLoggingT $ do
   fxRef :: Maybe BSL.ByteString <-
     liftIO . foldMap readFxRefFile $ eurofxrefFile args
 
-  let fxData :: Maybe (Either String.String (V.Vector FxRecord)) = Csv.decode Csv.HasHeader <$> fxRef
-  -- let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  let fxMap :: Maybe (HMS.HashMap FxDate FxRecord) =
+        foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+  print fxMap
   -- SNIP: End factor.
 
-  print fxData
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
