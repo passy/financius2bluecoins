@@ -303,23 +303,19 @@ readFxRefFile path = do
  where
   extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
+loadFxRates :: MonadIO io => FilePath -> io (Maybe (HMS.HashMap FxDate FxRecord))
+loadFxRates file = do
+  fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
+  let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  return $ foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-
-  -- SNIP: Star factor.
-  fxRef :: Maybe BSL.ByteString <-
-    liftIO . foldMap readFxRefFile $ eurofxrefFile args
-
-  let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
-  let fxMap :: Maybe (HMS.HashMap FxDate FxRecord) =
-        foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
-  print fxMap
-  -- SNIP: End factor.
-
+  fxRates                       <- traverse loadFxRates $ eurofxrefFile args
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
