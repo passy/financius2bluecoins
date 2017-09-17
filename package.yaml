@@ -43,6 +43,7 @@ dependencies:
   - hashable
   - transformers
   - zip-archive
+  - cassava
 
 executables:
   financius2bluecoin:

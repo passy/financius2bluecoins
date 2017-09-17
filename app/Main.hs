@@ -22,6 +22,7 @@ import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Fail (fail)
 
 import qualified Data.Aeson as Aeson
+import qualified Data.String as String
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Types as Aeson
 import qualified Control.Monad.Logger as L
@@ -34,6 +35,9 @@ import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Hashable as Hashable
 import qualified Codec.Archive.Zip as Zip
+import qualified Data.Csv as Csv
+import qualified Data.Time.Calendar as Calendar
+import qualified Data.Text.Read as TRead
 
 -- * Constants
 
@@ -91,6 +95,34 @@ data FinanciusTag = FinanciusTag
   { ftagId :: Text
   , ftagName :: Text
   } deriving (Eq, Show)
+
+-- | A fx rate record for a given day, based on the ECB CSV data.
+data FxRecord = FxRecord
+  { fxDate :: Calendar.Day
+  , fxUSD :: Double
+  , fxGBP :: Double
+  , fxEUR :: Double
+  } deriving (Eq, Show)
+
+instance Csv.FromRecord FxRecord where
+  parseRecord v =
+    FxRecord <$> (parseDate =<< v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
+    where
+      parseDate :: T.Text -> Csv.Parser Calendar.Day
+      parseDate v' =
+        parseEither $
+          let (year, v'') = T.break (== '-') v'
+              (month, v''') = T.break (== '-') $ T.drop 1 v''
+              (day, _) = T.break (== '-') $ T.drop 1 v'''
+          in Calendar.fromGregorian <$> dec year <*> dec month <*> dec day
+
+      dec :: forall b. Integral b => Text -> Either String.String b
+      dec = (fst <$>) . TRead.decimal . traceShowId
+
+      parseEither :: Either a b -> Csv.Parser b
+      parseEither = \case
+        Left _ -> mzero
+        Right b -> pure b
 
 data TransactionBundle = Single BluecoinAccount | Double BluecoinAccount BluecoinAccount
   deriving (Show, Eq)
@@ -261,15 +293,22 @@ readFxRefFile path = do
  where
   extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
-
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-  fxref :: Maybe BSL.ByteString <-
+
+  -- SNIP: Star factor.
+  fxRef :: Maybe BSL.ByteString <-
     liftIO . foldMap readFxRefFile $ eurofxrefFile args
+
+  let fxData :: Maybe (Either String.String (V.Vector FxRecord)) = Csv.decode Csv.HasHeader <$> fxRef
+  -- let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  -- SNIP: End factor.
+
+  print fxData
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
