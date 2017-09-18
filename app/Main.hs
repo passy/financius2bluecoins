@@ -97,7 +97,11 @@ data FinanciusTag = FinanciusTag
   } deriving (Eq, Show)
 
 newtype FxDate = FxDate Calendar.Day
-  deriving (Eq, Show)
+  deriving (Eq, Show, Ord)
+
+instance Enum FxDate where
+  toEnum = FxDate . toEnum
+  fromEnum (FxDate d) = fromEnum d
 
 instance Hashable.Hashable FxDate where
   hash (FxDate d) =
@@ -308,6 +312,20 @@ loadFxRates file = do
   fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
   let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
   return $ foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+
+-- | A very terrible attempt of "always" getting a date, by simply going back by up to four
+-- days if one is missing in the list. This may seem silly, but we actually know the data, so
+-- this is fine. And while it would be more accurate to lineraly interpolate, it's also
+-- overkill.
+backtrackFxRate :: HMS.HashMap FxDate FxRecord -> FxDate -> Maybe FxRecord
+backtrackFxRate map' = go 5
+  where
+    go :: Int -> FxDate -> Maybe FxRecord
+    go 0 _ = Nothing
+    go i fxd =
+      case HMS.lookup fxd map' of
+        Just r -> Just r
+        Nothing -> go (pred i) (pred fxd)
 
 main :: IO ()
 main = L.runStderrLoggingT $ do
