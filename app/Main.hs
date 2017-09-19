@@ -57,6 +57,8 @@ data Args = Args
 
 type AccountMapping = HMS.HashMap Text Int64
 
+type FxTable = HMS.HashMap FxDate FxRecord
+
 data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
   , btxAmount :: Integer
@@ -307,7 +309,7 @@ readFxRefFile path = do
  where
   extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
-loadFxRates :: MonadIO io => FilePath -> io (Maybe (HMS.HashMap FxDate FxRecord))
+loadFxRates :: MonadIO io => FilePath -> io (Maybe FxTable)
 loadFxRates file = do
   fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
   let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
@@ -317,7 +319,7 @@ loadFxRates file = do
 -- days if one is missing in the list. This may seem silly, but we actually know the data, so
 -- this is fine. And while it would be more accurate to lineraly interpolate, it's also
 -- overkill.
-backtrackFxRate :: HMS.HashMap FxDate FxRecord -> FxDate -> Maybe FxRecord
+backtrackFxRate :: FxTable -> FxDate -> Maybe FxRecord
 backtrackFxRate map' = go 5
   where
     go :: Int -> FxDate -> Maybe FxRecord
@@ -333,7 +335,7 @@ main = L.runStderrLoggingT $ do
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-  fxRates                       <- traverse loadFxRates $ eurofxrefFile args
+  fxRates :: Maybe FxTable      <- join <$> traverse loadFxRates (eurofxrefFile args)
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
@@ -381,6 +383,7 @@ main = L.runStderrLoggingT $ do
                                       mergedAccounts
                                       mergedCategories
                                       fTags
+                                      fxRates
               )
             )
             maybeFtxs
@@ -471,9 +474,10 @@ mkBluecoinTransaction
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
   -> HMS.HashMap Text FinanciusTag
+  -> Maybe FxTable
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
+mkBluecoinTransaction conn baccs bcats ftags mfxs ftx@FinanciusTransaction {..} = do
   let itemName = if T.null ftxNote then "(Unnamed transaction)" else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
@@ -483,11 +487,16 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
   let btxTransactionType = getBtxType ftx
+  let btxDailyFxRate = getDailyFxRate ftx <$> mfxs
 
   btxAccount    <- getBtxAccount baccs ftx
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
+
+getDailyFxRate :: FinanciusTransaction -> HMS.HashMap FxDate FxRecord -> Maybe FxRecord
+getDailyFxRate FinanciusTransaction{ ftxExchangeRate, ftxDate } fxs =
+  undefined
 
 getBtxType :: FinanciusTransaction -> BluecoinTransactionType
 getBtxType FinanciusTransaction {..}
