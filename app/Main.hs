@@ -5,6 +5,7 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -64,7 +65,7 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAmount :: Integer
   , btxNotes :: Text
   , btxDate :: Clock.UTCTime
-  , btxAccount :: TransactionBundle
+  , btxAccount :: TransactionBundle (BluecoinAccount, Maybe FxRecord)
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
   , btxConversionRate :: Double
@@ -140,8 +141,8 @@ instance Csv.FromRecord FxRecord where
   parseRecord v =
     FxRecord <$> (v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
 
-data TransactionBundle = Single BluecoinAccount | Double BluecoinAccount BluecoinAccount
-  deriving (Show, Eq)
+data TransactionBundle a = Single a | Double a a
+  deriving (Show, Eq, Functor)
 
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
@@ -449,7 +450,7 @@ getBtxAccount
   :: L.MonadLogger m
   => HMS.HashMap Text BluecoinAccount
   -> FinanciusTransaction
-  -> MaybeT m TransactionBundle
+  -> MaybeT m (TransactionBundle BluecoinAccount)
 getBtxAccount baccs FinanciusTransaction {..} = case ftxTransactionType of
   FtxExpense  -> Single <$> lookup ftxAccountFromId
   FtxIncome   -> Single <$> lookup ftxAccountToId
@@ -477,7 +478,7 @@ mkBluecoinTransaction
   -> Maybe FxTable
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags mfxs ftx@FinanciusTransaction {..} = do
+mkBluecoinTransaction conn baccs bcats ftags fxtable ftx@FinanciusTransaction {..} = do
   let itemName = if T.null ftxNote then "(Unnamed transaction)" else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
@@ -489,10 +490,18 @@ mkBluecoinTransaction conn baccs bcats ftags mfxs ftx@FinanciusTransaction {..} 
   let btxTransactionType = getBtxType ftx
   let btxDailyFxRate = getDailyFxRate ftx <$> mfxs
 
-  btxAccount    <- getBtxAccount baccs ftx
+  btxAccount'   <- getBtxAccount baccs ftx
+  let btxAccount = tagAccountWithFxRate fxtable <$> btxAccount'
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
+
+tagAccountWithFxRate
+  :: FxTable
+  -> TransactionBundle BluecoinAccount
+  -> TransactionBundle (BluecoinAccount, Maybe FxRecord)
+tagAccountWithFxRate fxtable =
+  undefined
 
 getDailyFxRate :: FinanciusTransaction -> HMS.HashMap FxDate FxRecord -> Maybe FxRecord
 getDailyFxRate FinanciusTransaction{ ftxExchangeRate, ftxDate } fxs =
