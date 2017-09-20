@@ -60,6 +60,8 @@ type AccountMapping = HMS.HashMap Text Int64
 
 type FxTable = HMS.HashMap FxDate FxRecord
 
+type FxLookup = (FxDate -> Maybe FxRecord)
+
 data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
   , btxAmount :: Integer
@@ -310,11 +312,15 @@ readFxRefFile path = do
  where
   extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
-loadFxRates :: MonadIO io => FilePath -> io (Maybe FxTable)
+loadFxRates :: MonadIO io => FilePath -> io FxLookup
 loadFxRates file = do
   fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
   let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
-  return $ foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+  let table :: Maybe FxTable = foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+
+  return $ case table of
+    Just t -> \key -> HMS.lookup key t
+    Nothing -> const Nothing
 
 -- | A very terrible attempt of "always" getting a date, by simply going back by up to four
 -- days if one is missing in the list. This may seem silly, but we actually know the data, so
@@ -475,7 +481,7 @@ mkBluecoinTransaction
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
   -> HMS.HashMap Text FinanciusTag
-  -> Maybe FxTable
+  -> FxTable
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
 mkBluecoinTransaction conn baccs bcats ftags fxtable ftx@FinanciusTransaction {..} = do
@@ -488,18 +494,18 @@ mkBluecoinTransaction conn baccs bcats ftags fxtable ftx@FinanciusTransaction {.
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
   let btxTransactionType = getBtxType ftx
-  let btxDailyFxRate = getDailyFxRate ftx <$> mfxs
+  let dailyFxRate = getDailyFxRate ftx <$> fxtable
 
   btxAccount'   <- getBtxAccount baccs ftx
-  let btxAccount = tagAccountWithFxRate fxtable <$> btxAccount'
+  let btxAccount = tagAccountWithFxRate dailyFxRate <$> btxAccount'
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
 
 tagAccountWithFxRate
-  :: FxTable
-  -> TransactionBundle BluecoinAccount
-  -> TransactionBundle (BluecoinAccount, Maybe FxRecord)
+  :: Maybe FxRecord
+  -> BluecoinAccount
+  -> (BluecoinAccount, Maybe FxRecord)
 tagAccountWithFxRate fxtable =
   undefined
 
