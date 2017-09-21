@@ -312,27 +312,29 @@ readFxRefFile path = do
  where
   extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
 
-loadFxRates :: MonadIO io => FilePath -> io FxLookup
+loadFxRates :: (MonadIO m, L.MonadLogger m) => FilePath -> m FxLookup
 loadFxRates file = do
   fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
   let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
   let table :: Maybe FxTable = foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
 
-  return $ case table of
-    Just t -> \key -> HMS.lookup key t
-    Nothing -> const Nothing
+  case table of
+    Just t -> return $ \key -> HMS.lookup key t
+    Nothing -> do
+      $(L.logWarn) "Decoding ECB Euro exchange rates failed."
+      return $ const Nothing
 
 -- | A very terrible attempt of "always" getting a date, by simply going back by up to four
 -- days if one is missing in the list. This may seem silly, but we actually know the data, so
 -- this is fine. And while it would be more accurate to lineraly interpolate, it's also
 -- overkill.
-backtrackFxRate :: FxTable -> FxDate -> Maybe FxRecord
-backtrackFxRate map' = go 5
+backtrackFxRate :: FxLookup -> FxDate -> Maybe FxRecord
+backtrackFxRate lookup = go 5
   where
     go :: Int -> FxDate -> Maybe FxRecord
     go 0 _ = Nothing
     go i fxd =
-      case HMS.lookup fxd map' of
+      case lookup fxd of
         Just r -> Just r
         Nothing -> go (pred i) (pred fxd)
 
@@ -342,7 +344,7 @@ main = L.runStderrLoggingT $ do
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-  fxRates :: Maybe FxTable      <- join <$> traverse loadFxRates (eurofxrefFile args)
+  fxLookup :: FxLookup          <- fromMaybe (const Nothing) <$> traverse loadFxRates (eurofxrefFile args)
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
