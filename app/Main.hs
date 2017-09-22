@@ -392,7 +392,7 @@ main = L.runStderrLoggingT $ do
                                       mergedAccounts
                                       mergedCategories
                                       fTags
-                                      fxRates
+                                      fxLookup
               )
             )
             maybeFtxs
@@ -483,10 +483,10 @@ mkBluecoinTransaction
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
   -> HMS.HashMap Text FinanciusTag
-  -> FxTable
+  -> FxLookup
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags fxtable ftx@FinanciusTransaction {..} = do
+mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {..} = do
   let itemName = if T.null ftxNote then "(Unnamed transaction)" else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
@@ -496,7 +496,7 @@ mkBluecoinTransaction conn baccs bcats ftags fxtable ftx@FinanciusTransaction {.
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
   let btxTransactionType = getBtxType ftx
-  let dailyFxRate = getDailyFxRate ftx <$> fxtable
+  let dailyFxRate = backtrackFxRate fxlookup (FxDate $ Clock.utctDay btxDate)
 
   btxAccount'   <- getBtxAccount baccs ftx
   let btxAccount = tagAccountWithFxRate dailyFxRate <$> btxAccount'
@@ -578,8 +578,12 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
   -- for doing this that I can't think of right now.
   forM_ btxLabels $ \label -> forM_ txIds (writeBluecoinLabel conn label)
  where
-  write :: Integer -> BluecoinAccount -> BluecoinAccount -> io RowId
-  write amount srcAccount destAccount = do
+  write
+    :: Integer
+    -> (BluecoinAccount, Maybe FxRecord)
+    -> (BluecoinAccount, Maybe FxRecord)
+    -> io RowId
+  write amount (srcAccount, srcFx) (destAccount, destFx) = do
     let
       sql :: SQL.Query
         = "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
