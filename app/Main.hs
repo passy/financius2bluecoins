@@ -319,7 +319,7 @@ loadFxRates file = do
   let table :: Maybe FxTable = foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
 
   case table of
-    Just t -> return $ \key -> HMS.lookup key t
+    Just t -> return $ \k -> HMS.lookup k t
     Nothing -> do
       $(L.logWarn) "Decoding ECB Euro exchange rates failed."
       return $ const Nothing
@@ -499,21 +499,40 @@ mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {
   let dailyFxRate = backtrackFxRate fxlookup (FxDate $ Clock.utctDay btxDate)
 
   btxAccount'   <- getBtxAccount baccs ftx
-  let btxAccount = tagAccountWithFxRate dailyFxRate <$> btxAccount'
+  let btxAccount = flip (,) dailyFxRate <$> btxAccount'
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
 
-tagAccountWithFxRate
-  :: Maybe FxRecord
-  -> BluecoinAccount
-  -> (BluecoinAccount, Maybe FxRecord)
-tagAccountWithFxRate fxtable =
-  undefined
+lookupFxRate
+  :: L.MonadLogger m
+  => BluecoinAccount
+  -> FxLookup
+  -> FxDate
+  -> m (Maybe Double)
+lookupFxRate bacc@BluecoinAccount{baccCurrencyCode} fxlookup fxdate = do
+  let dailyRate = backtrackFxRate fxlookup fxdate
+  case dailyRate of
+    Nothing -> do
+      $(L.logWarn) $ "Could not find fx rates for date " <> show fxdate <>". Maybe update the CSV."
+      return Nothing
+    Just fxr ->
+      case fxRateForCurrency bacc fxr of
+        Just rate -> pure $ Just rate
+        Nothing -> do
+          $(L.logWarn) $ "Unsupported currency type " <> baccCurrencyCode <>". Setting fx rate to 1.0."
+          return Nothing
 
-getDailyFxRate :: FinanciusTransaction -> HMS.HashMap FxDate FxRecord -> Maybe FxRecord
-getDailyFxRate FinanciusTransaction{ ftxExchangeRate, ftxDate } fxs =
-  undefined
+fxRateForCurrency
+  :: BluecoinAccount
+  -> FxRecord
+  -> Maybe Double
+fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} =
+  case baccCurrencyCode of
+    "USD" -> pure fxUSD
+    "EUR" -> pure fxEUR
+    "GBP" -> pure fxGBP
+    _     -> Nothing
 
 getBtxType :: FinanciusTransaction -> BluecoinTransactionType
 getBtxType FinanciusTransaction {..}
