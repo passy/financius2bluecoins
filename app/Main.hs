@@ -6,6 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -67,7 +68,7 @@ data BluecoinTransaction = BluecoinTransaction
   , btxAmount :: Integer
   , btxNotes :: Text
   , btxDate :: Clock.UTCTime
-  , btxAccount :: TransactionBundle (BluecoinAccount, Maybe FxRecord)
+  , btxAccount :: TransactionBundle (BluecoinAccount, Double)
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
   , btxConversionRate :: Double
@@ -144,7 +145,7 @@ instance Csv.FromRecord FxRecord where
     FxRecord <$> (v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
 
 data TransactionBundle a = Single a | Double a a
-  deriving (Show, Eq, Functor)
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
@@ -498,30 +499,21 @@ mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {
   let btxTransactionType = getBtxType ftx
   let dailyFxRate = backtrackFxRate fxlookup (FxDate $ Clock.utctDay btxDate)
 
-  btxAccount'   <- getBtxAccount baccs ftx
-  let btxAccount = flip (,) dailyFxRate <$> btxAccount'
+  btxAccount' <- getBtxAccount baccs ftx
+  let taggedAccount :: TransactionBundle (BluecoinAccount, Maybe FxRecord) = flip (,) dailyFxRate <$> btxAccount'
+  btxAccount :: TransactionBundle (BluecoinAccount, Double) <- traverse mergeAccountRates taggedAccount
+
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
 
-lookupFxRate
+mergeAccountRates
   :: L.MonadLogger m
-  => BluecoinAccount
-  -> FxLookup
-  -> FxDate
-  -> m (Maybe Double)
-lookupFxRate bacc@BluecoinAccount{baccCurrencyCode} fxlookup fxdate = do
-  let dailyRate = backtrackFxRate fxlookup fxdate
-  case dailyRate of
-    Nothing -> do
-      $(L.logWarn) $ "Could not find fx rates for date " <> show fxdate <>". Maybe update the CSV."
-      return Nothing
-    Just fxr ->
-      case fxRateForCurrency bacc fxr of
-        Just rate -> pure $ Just rate
-        Nothing -> do
-          $(L.logWarn) $ "Unsupported currency type " <> baccCurrencyCode <>". Setting fx rate to 1.0."
-          return Nothing
+  => (BluecoinAccount, Maybe FxRecord)
+  -> m (BluecoinAccount, Double)
+mergeAccountRates (bacc, mfxr) = do
+  let rate = mfxr >>= fxRateForCurrency bacc
+  return (bacc, fromMaybe 1.0 rate)
 
 fxRateForCurrency
   :: BluecoinAccount
@@ -599,8 +591,8 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
  where
   write
     :: Integer
-    -> (BluecoinAccount, Maybe FxRecord)
-    -> (BluecoinAccount, Maybe FxRecord)
+    -> BluecoinAccount
+    -> BluecoinAccount
     -> io RowId
   write amount (srcAccount, srcFx) (destAccount, destFx) = do
     let
