@@ -532,10 +532,11 @@ fxRateForCurrency
   -> FxRecord
   -> Maybe Double
 fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} =
+  -- TODO: Don't hardcode the target currency.
   case baccCurrencyCode of
-    "USD" -> pure fxUSD
-    "EUR" -> pure fxEUR
-    "GBP" -> pure fxGBP
+    "USD" -> pure $ fxUSD / fxGBP
+    "EUR" -> pure $ fxEUR / fxGBP
+    "GBP" -> pure $ 1.0 -- fxGBP / fxGBP
     _     -> Nothing
 
 getBtxType :: FinanciusTransaction -> BluecoinTransactionType
