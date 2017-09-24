@@ -133,7 +133,7 @@ instance Csv.FromField FxDate where
 
     where
       dec :: forall b. Integral b => Text -> Either String.String b
-      dec = (fst <$>) . TRead.decimal . traceShowId
+      dec = (fst <$>) . TRead.decimal
 
       parseEither :: Either a b -> Csv.Parser b
       parseEither = \case
@@ -346,6 +346,7 @@ main = L.runStderrLoggingT $ do
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
   fxLookup :: FxLookup          <- fromMaybe (const Nothing) <$> traverse loadFxRates (eurofxrefFile args)
+  $(L.logInfo) "Parsing inputs complete."
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
