@@ -591,10 +591,10 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
  where
   write
     :: Integer
-    -> BluecoinAccount
-    -> BluecoinAccount
+    -> (BluecoinAccount, Double)
+    -> (BluecoinAccount, Double)
     -> io RowId
-  write amount (srcAccount, srcFx) (destAccount, destFx) = do
+  write amount (srcAccount, srcFx) (destAccount, _) = do
     let
       sql :: SQL.Query
         = "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
@@ -610,7 +610,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":categoryID" := btxCategoryId
       , ":hasPhoto" := (0 :: Int)
       , ":labelCount" := length btxLabels
-      , ":conversionRateNew" := btxConversionRate
+      , ":conversionRateNew" := (chooseSignificant btxConversionRate srcFx)
       , ":transactionTypeID" := fromEnum btxTransactionType
       , ":uidPairID" := (-1 :: Int)
       , ":accountID" := baccId srcAccount
@@ -622,6 +622,13 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":tags" := ("temptags" :: Text)
       ]
     liftIO $ RowId <$> SQL.lastInsertRowId conn
+
+-- | Given two doubles, pick the one that deviates the most from 1.0.
+chooseSignificant :: Double -> Double -> Double
+chooseSignificant a b =
+  let ad = abs $ 1.0 - a
+      bd = abs $ 1.0 - b
+  in if ad > bd then a else b
 
 writeBluecoinLabel
   :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> Text -> RowId -> io ()
