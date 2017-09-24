@@ -345,7 +345,13 @@ main = L.runStderrLoggingT $ do
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-  fxLookup :: FxLookup          <- fromMaybe (const Nothing) <$> traverse loadFxRates (eurofxrefFile args)
+  fxLookup' :: Maybe FxLookup          <- traverse loadFxRates (eurofxrefFile args)
+  fxLookup <- case fxLookup' of
+        Just a -> pure a
+        Nothing -> do
+          $(L.logWarn) "No fxrates provided. Falling back to 1.0 rate."
+          return $ const Nothing
+
   $(L.logInfo) "Parsing inputs complete."
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
@@ -514,8 +520,13 @@ mergeAccountRates
   -> m (BluecoinAccount, Double)
 mergeAccountRates (bacc, mfxr) = do
   let rate = mfxr >>= fxRateForCurrency bacc
-  return (bacc, fromMaybe 1.0 rate)
+  case rate of
+    Just r -> return (bacc, r)
+    Nothing -> do
+      $(L.logWarn) $ "Lookup of fx rate for account " <> show bacc <> " failed."
+      return (bacc, 1.0)
 
+-- | This is rather silly. A Map with header values would be much better.
 fxRateForCurrency
   :: BluecoinAccount
   -> FxRecord
