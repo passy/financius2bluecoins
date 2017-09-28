@@ -575,8 +575,11 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
         BtxTransfer   -> 0
 
   txIds <- case btxAccount of
-    Single account -> do
-      txId <- write amount account account
+    Single account@(_, fxr) -> do
+      -- For foreign transactions, bluecoins does not save the amount transacted
+      -- but instead stores it AS AN IEEE-754 MULTIPLICATION WITH THE EXCHANGE RATE.
+      -- Yeah, I'm not happy about this.
+      txId <- write (round $ fromIntegral amount / fxr) account account
       setTxPairId conn txId txId
       return [txId]
     Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
