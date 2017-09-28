@@ -5,6 +5,8 @@
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -22,6 +24,8 @@ import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Fail (fail)
 
 import qualified Data.Aeson as Aeson
+import qualified Data.String as String
+import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Aeson.Types as Aeson
 import qualified Control.Monad.Logger as L
 import qualified Data.Vector as V
@@ -32,6 +36,10 @@ import qualified Data.Text as T
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Hashable as Hashable
+import qualified Codec.Archive.Zip as Zip
+import qualified Data.Csv as Csv
+import qualified Data.Time.Calendar as Calendar
+import qualified Data.Text.Read as TRead
 
 -- * Constants
 
@@ -46,16 +54,21 @@ newAccountCategory = BluecoinCategory (RowId 2) "(New Account)"
 data Args = Args
   { financiusFile :: FilePath
   , bluecoinFile :: FilePath
+  , eurofxrefFile :: Maybe FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
 type AccountMapping = HMS.HashMap Text Int64
+
+type FxTable = HMS.HashMap FxDate FxRecord
+
+type FxLookup = (FxDate -> Maybe FxRecord)
 
 data BluecoinTransaction = BluecoinTransaction
   { btxItemId :: RowId
   , btxAmount :: Integer
   , btxNotes :: Text
   , btxDate :: Clock.UTCTime
-  , btxAccount :: TransactionBundle
+  , btxAccount :: TransactionBundle (BluecoinAccount, Double)
   , btxCategoryId :: RowId
   , btxLabels :: [Text]
   , btxConversionRate :: Double
@@ -89,8 +102,50 @@ data FinanciusTag = FinanciusTag
   , ftagName :: Text
   } deriving (Eq, Show)
 
-data TransactionBundle = Single BluecoinAccount | Double BluecoinAccount BluecoinAccount
-  deriving (Show, Eq)
+newtype FxDate = FxDate Calendar.Day
+  deriving (Eq, Show, Ord)
+
+instance Enum FxDate where
+  toEnum = FxDate . toEnum
+  fromEnum (FxDate d) = fromEnum d
+
+instance Hashable.Hashable FxDate where
+  hash (FxDate d) =
+    let (x, y, z) = Calendar.toGregorian d
+    in fromIntegral $ (32 * x + 32 * fromIntegral y + 32 * fromIntegral z)
+
+  hashWithSalt salt v = (Hashable.hash v) * salt
+
+-- | A fx rate record for a given day, based on the ECB CSV data.
+data FxRecord = FxRecord
+  { fxDate :: FxDate
+  , fxUSD :: Double
+  , fxGBP :: Double
+  , fxEUR :: Double
+  } deriving (Eq, Show)
+
+instance Csv.FromField FxDate where
+  parseField v' = parseEither $
+        let (year, v'') = T.break (== '-') $ decodeUtf8 v'
+            (month, v''') = T.break (== '-') $ T.drop 1 v''
+            (day, _) = T.break (== '-') $ T.drop 1 v'''
+        in FxDate <$> (Calendar.fromGregorian <$> dec year <*> dec month <*> dec day)
+
+    where
+      dec :: forall b. Integral b => Text -> Either String.String b
+      dec = (fst <$>) . TRead.decimal
+
+      parseEither :: Either a b -> Csv.Parser b
+      parseEither = \case
+        Left _ -> mzero
+        Right b -> pure b
+
+instance Csv.FromRecord FxRecord where
+  parseRecord v =
+    FxRecord <$> (v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
+
+data TransactionBundle a = Single a | Double a a
+  deriving (Show, Eq, Functor, Foldable, Traversable)
 
 instance Aeson.FromJSON FinanciusAccount where
   parseJSON = Aeson.withObject "account" $ \o ->
@@ -248,15 +303,56 @@ vecCatMaybes = V.concatMap f
 
 decodeJSONArray
   :: (AsValue s, Aeson.FromJSON a) => Text -> s -> Maybe (V.Vector a)
-decodeJSONArray key_ json = sequenceA $ join <$> sequenceA
-  (fmap (hush . decodeValueEither) <$> (json ^? key key_ . _Array))
+decodeJSONArray key_ json =
+  foldMap (hush . decodeValueEither) <$> (json ^? key key_ . _Array)
+
+readFxRefFile :: FilePath -> IO (Maybe BSL.ByteString)
+readFxRefFile path = do
+  archive <- Zip.toArchive <$> BSL.readFile path
+  return $ extractCSV archive
+ where
+  extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
+
+loadFxRates :: (MonadIO m, L.MonadLogger m) => FilePath -> m FxLookup
+loadFxRates file = do
+  fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
+  let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  let table :: Maybe FxTable = foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
+
+  case table of
+    Just t -> return $ \k -> HMS.lookup k t
+    Nothing -> do
+      $(L.logWarn) "Decoding ECB Euro exchange rates failed."
+      return $ const Nothing
+
+-- | A very terrible attempt of "always" getting a date, by simply going back by up to four
+-- days if one is missing in the list. This may seem silly, but we actually know the data, so
+-- this is fine. And while it would be more accurate to lineraly interpolate, it's also
+-- overkill.
+backtrackFxRate :: FxLookup -> FxDate -> Maybe FxRecord
+backtrackFxRate lookup = go 5
+  where
+    go :: Int -> FxDate -> Maybe FxRecord
+    go 0 _ = Nothing
+    go i fxd =
+      case lookup fxd of
+        Just r -> Just r
+        Nothing -> go (pred i) (pred fxd)
 
 main :: IO ()
 main = L.runStderrLoggingT $ do
   $(L.logInfo) "Getting started ..."
-  args :: Args  <- getRecord "financius2bluecoin"
-  financiusJson <- liftIO . readFile $ financiusFile args
-  conn          <- liftIO . SQL.open $ bluecoinFile args
+  args :: Args                  <- getRecord "financius2bluecoin"
+  financiusJson                 <- liftIO . readFile $ financiusFile args
+  conn                          <- liftIO . SQL.open $ bluecoinFile args
+  fxLookup' :: Maybe FxLookup          <- traverse loadFxRates (eurofxrefFile args)
+  fxLookup <- case fxLookup' of
+        Just a -> pure a
+        Nothing -> do
+          $(L.logWarn) "No fxrates provided. Falling back to 1.0 rate."
+          return $ const Nothing
+
+  $(L.logInfo) "Parsing inputs complete."
 
   -- I'm sure there's a better way for this. I must be ignoring some useful law here.
   let fAccounts :: HMS.HashMap Text FinanciusAccount = maybe
@@ -287,14 +383,27 @@ main = L.runStderrLoggingT $ do
 
   maybeFtxs :: V.Vector (Maybe FinanciusTransaction) <-
     forM transactions $ \tx -> case Aeson.fromJSON tx of
-      Aeson.Success (ftx@FinanciusTransaction{ftxModelState})
+      Aeson.Success (ftx@FinanciusTransaction { ftxModelState })
         | ftxModelState /= FtxModelStateInvalid -> return $ Just ftx
-        | otherwise -> return Nothing
+        | otherwise                             -> return Nothing
       Aeson.Error e -> do
         $(L.logError) $ "Couldn't parse transaction: " <> show e
         return Nothing
 
-  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <- fmap join <$> V.mapM (\m -> forM m (runMaybeT . mkBluecoinTransaction conn mergedAccounts mergedCategories fTags)) maybeFtxs
+  maybeBtxs :: V.Vector (Maybe BluecoinTransaction) <-
+    fmap join
+      <$> V.mapM
+            ( \m -> forM
+              m
+              ( runMaybeT
+              . mkBluecoinTransaction conn
+                                      mergedAccounts
+                                      mergedCategories
+                                      fTags
+                                      fxLookup
+              )
+            )
+            maybeFtxs
 
   $(L.logInfo) "Writing transactions ..."
   mapM_ (writeBluecoinTransaction conn) (vecCatMaybes maybeBtxs)
@@ -357,7 +466,7 @@ getBtxAccount
   :: L.MonadLogger m
   => HMS.HashMap Text BluecoinAccount
   -> FinanciusTransaction
-  -> MaybeT m TransactionBundle
+  -> MaybeT m (TransactionBundle BluecoinAccount)
 getBtxAccount baccs FinanciusTransaction {..} = case ftxTransactionType of
   FtxExpense  -> Single <$> lookup ftxAccountFromId
   FtxIncome   -> Single <$> lookup ftxAccountToId
@@ -382,9 +491,10 @@ mkBluecoinTransaction
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
   -> HMS.HashMap Text FinanciusTag
+  -> FxLookup
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
+mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {..} = do
   let itemName = if T.null ftxNote then "(Unnamed transaction)" else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
@@ -394,11 +504,40 @@ mkBluecoinTransaction conn baccs bcats ftags ftx@FinanciusTransaction {..} = do
         ftagName <$> catMaybes (flip HMS.lookup ftags <$> ftxTagIds)
   let btxConversionRate  = ftxExchangeRate
   let btxTransactionType = getBtxType ftx
+  let dailyFxRate = backtrackFxRate fxlookup (FxDate $ Clock.utctDay btxDate)
 
-  btxAccount    <- getBtxAccount baccs ftx
+  btxAccount' <- getBtxAccount baccs ftx
+  let taggedAccount :: TransactionBundle (BluecoinAccount, Maybe FxRecord) = flip (,) dailyFxRate <$> btxAccount'
+  btxAccount :: TransactionBundle (BluecoinAccount, Double) <- traverse mergeAccountRates taggedAccount
+
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
   return BluecoinTransaction {..}
+
+mergeAccountRates
+  :: L.MonadLogger m
+  => (BluecoinAccount, Maybe FxRecord)
+  -> m (BluecoinAccount, Double)
+mergeAccountRates (bacc, mfxr) = do
+  let rate = mfxr >>= fxRateForCurrency bacc
+  case rate of
+    Just r -> return (bacc, r)
+    Nothing -> do
+      $(L.logWarn) $ "Lookup of fx rate for account " <> show bacc <> " failed."
+      return (bacc, 1.0)
+
+-- | This is rather silly. A Map with header values would be much better.
+fxRateForCurrency
+  :: BluecoinAccount
+  -> FxRecord
+  -> Maybe Double
+fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} =
+  -- TODO: Don't hardcode the target currency.
+  case baccCurrencyCode of
+    "USD" -> pure $ fxUSD / fxGBP
+    "EUR" -> pure $ fxEUR / fxGBP
+    "GBP" -> pure $ 1.0 -- fxGBP / fxGBP
+    _     -> Nothing
 
 getBtxType :: FinanciusTransaction -> BluecoinTransactionType
 getBtxType FinanciusTransaction {..}
@@ -436,13 +575,16 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
         BtxTransfer   -> 0
 
   txIds <- case btxAccount of
-    Single account -> do
-      txId <- write amount account account
+    Single account@(_, fxr) -> do
+      -- For foreign transactions, bluecoins does not save the amount transacted
+      -- but instead stores it AS AN IEEE-754 MULTIPLICATION WITH THE EXCHANGE RATE.
+      -- Yeah, I'm not happy about this.
+      txId <- write (round $ fromIntegral amount / fxr) account account
       setTxPairId conn txId txId
       return [txId]
     Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
       then do
-      -- I know this is a very lazy way of handling this invariant.
+        -- I know this is a very lazy way of handling this invariant.
         $(L.logError)
           $  "Invalid Double transaction with non-transfer type: "
           <> show btx
@@ -451,7 +593,10 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
         srcTxId  <- write (negate btxAmount) srcAccount destAccount
         -- This `round` makes me uneasy, but I think it should be the right thing here as it's only used
         -- to approximate the amount to cents / pence.
-        destTxId <- write (round ((fromIntegral btxAmount) * btxConversionRate)) destAccount srcAccount
+        destTxId <- write
+          (round ((fromIntegral btxAmount) * btxConversionRate))
+          destAccount
+          srcAccount
         setTxPairId conn srcTxId  destTxId
         setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
@@ -460,8 +605,12 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
   -- for doing this that I can't think of right now.
   forM_ btxLabels $ \label -> forM_ txIds (writeBluecoinLabel conn label)
  where
-  write :: Integer -> BluecoinAccount -> BluecoinAccount -> io RowId
-  write amount srcAccount destAccount = do
+  write
+    :: Integer
+    -> (BluecoinAccount, Double)
+    -> (BluecoinAccount, Double)
+    -> io RowId
+  write amount (srcAccount, srcFx) (destAccount, _) = do
     let
       sql :: SQL.Query
         = "INSERT INTO TRANSACTIONSTABLE (itemID, amount, notes, accountID, transactionCurrency, conversionRateNew, transactionTypeID, categoryID, tags, accountReference, accountPairID, uidPairID, deletedTransaction, hasPhoto, labelCount, date)\
@@ -477,7 +626,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":categoryID" := btxCategoryId
       , ":hasPhoto" := (0 :: Int)
       , ":labelCount" := length btxLabels
-      , ":conversionRateNew" := btxConversionRate
+      , ":conversionRateNew" := (chooseSignificant btxConversionRate srcFx)
       , ":transactionTypeID" := fromEnum btxTransactionType
       , ":uidPairID" := (-1 :: Int)
       , ":accountID" := baccId srcAccount
@@ -489,6 +638,13 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":tags" := ("temptags" :: Text)
       ]
     liftIO $ RowId <$> SQL.lastInsertRowId conn
+
+-- | Given two doubles, pick the one that deviates the most from 1.0.
+chooseSignificant :: Double -> Double -> Double
+chooseSignificant a b =
+  let ad = abs $ 1.0 - a
+      bd = abs $ 1.0 - b
+  in if ad > bd then a else b
 
 writeBluecoinLabel
   :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> Text -> RowId -> io ()
