@@ -33,6 +33,7 @@ import qualified Database.SQLite.Simple as SQL
 import qualified Database.SQLite.Simple.ToField as SQL
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Time.Clock as Clock
 import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Hashable as Hashable
@@ -119,9 +120,7 @@ instance Hashable.Hashable FxDate where
 -- | A fx rate record for a given day, based on the ECB CSV data.
 data FxRecord = FxRecord
   { fxDate :: FxDate
-  , fxUSD :: Double
-  , fxGBP :: Double
-  , fxEUR :: Double
+  , fxRates :: HMS.HashMap Text Double
   } deriving (Eq, Show)
 
 instance Csv.FromField FxDate where
@@ -140,9 +139,18 @@ instance Csv.FromField FxDate where
         Left _ -> mzero
         Right b -> pure b
 
-instance Csv.FromRecord FxRecord where
-  parseRecord v =
-    FxRecord <$> (v Csv..! 0) <*> v Csv..! 1 <*> v Csv..! 8 <*> pure 1.0
+instance Csv.FromNamedRecord FxRecord where
+  parseNamedRecord v =
+    FxRecord <$> (v Csv..: 0) <*> (eitherToParser $ parseFxRatesTable v)
+
+eitherToParser :: Either Text b -> Csv.Parser b
+eitherToParser (Left a) = fail $ T.unpack a
+eitherToParser (Right b) = pure b
+
+parseFxRatesTable :: HMS.HashMap ByteString ByteString -> Either Text (HMS.HashMap Text Double)
+parseFxRatesTable = first T.pack . sequence . HMS.fromList . fmap transform . HMS.toList
+  where
+    transform (k, v) = (TE.decodeUtf8 k, fst <$> (TRead.double . TE.decodeUtf8 $ v))
 
 data TransactionBundle a = Single a | Double a a
   deriving (Show, Eq, Functor, Foldable, Traversable)
