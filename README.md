@@ -1,8 +1,7 @@
-# financius2bluecoin
+# financius2bluecoins
 
-Convert Financius backups to Bluecoin DBs.
+Convert Financius backups to Bluecoins SQLite databases.
 
 ```
-stack build
-stack build --fast; and stack exec financius2bluecoin -- --financiusFile Financius\ 2017-04-28\ 123800.json --bluecoinFile bluecoins_bare.fydb --mappingFile accounts_mapping.json
+./run.sh
 ```
