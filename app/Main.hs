@@ -311,7 +311,7 @@ readFxRefFile path = do
   archive <- Zip.toArchive <$> BSL.readFile path
   return $ extractCSV archive
  where
-  extractCSV f = Zip.fromEntry <$> Zip.findEntryByPath "eurofxref-hist.csv" f
+  extractCSV = fmap Zip.fromEntry . Zip.findEntryByPath "eurofxref-hist.csv"
 
 loadFxRates :: (MonadIO m, L.MonadLogger m) => FilePath -> m FxLookup
 loadFxRates file = do
