@@ -141,16 +141,20 @@ instance Csv.FromField FxDate where
 
 instance Csv.FromNamedRecord FxRecord where
   parseNamedRecord v =
-    FxRecord <$> (v Csv..: 0) <*> (eitherToParser $ parseFxRatesTable v)
+    FxRecord <$> (v Csv..: "Date") <*> (eitherToParser $ parseFxRatesTable v)
 
 eitherToParser :: Either Text b -> Csv.Parser b
-eitherToParser (Left a) = fail $ T.unpack a
+eitherToParser (Left _) = mempty
 eitherToParser (Right b) = pure b
 
 parseFxRatesTable :: HMS.HashMap ByteString ByteString -> Either Text (HMS.HashMap Text Double)
-parseFxRatesTable = first T.pack . sequence . HMS.fromList . fmap transform . HMS.toList
+parseFxRatesTable = first T.pack . sequence . HMS.fromList . catMaybes . fmap transform' . HMS.toList
   where
-    transform (k, v) = (TE.decodeUtf8 k, fst <$> (TRead.double . TE.decodeUtf8 $ v))
+    transform' :: (ByteString, ByteString) -> Maybe (Text, Either String.String Double)
+    transform' (k, v) | v == "N/A" = Nothing
+                      | k == "Date" = Nothing
+                      | k == mempty || v == mempty = Nothing
+                      | otherwise  = pure (TE.decodeUtf8 k, fst <$> (TRead.double . TE.decodeUtf8 $ v))
 
 data TransactionBundle a = Single a | Double a a
   deriving (Show, Eq, Functor, Foldable, Traversable)
@@ -324,7 +328,7 @@ readFxRefFile path = do
 loadFxRates :: (MonadIO m, L.MonadLogger m) => FilePath -> m FxLookup
 loadFxRates file = do
   fxRef :: Maybe BSL.ByteString <- liftIO . readFxRefFile $ file
-  let fxData :: Maybe (V.Vector FxRecord) = foldMap (hush . Csv.decode Csv.HasHeader) fxRef
+  let fxData :: Maybe (V.Vector FxRecord) = foldMap (fmap snd . hush . Csv.decodeByName) fxRef
   let table :: Maybe FxTable = foldl' (\b a@FxRecord{..} -> HMS.insert fxDate a b) HMS.empty <$> fxData
 
   case table of
@@ -539,13 +543,12 @@ fxRateForCurrency
   :: BluecoinAccount
   -> FxRecord
   -> Maybe Double
-fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} =
-  -- TODO: Don't hardcode the target currency.
-  case baccCurrencyCode of
-    "USD" -> pure $ fxUSD / fxGBP
-    "EUR" -> pure $ fxEUR / fxGBP
-    "GBP" -> pure $ 1.0 -- fxGBP / fxGBP
-    _     -> Nothing
+fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} = do
+  -- TODO: Don't hardcode base rate.
+  baseRate <- HMS.lookup "GBP" fxRates
+  targetRate <- if baccCurrencyCode == "EUR" then Just 1.0 else HMS.lookup baccCurrencyCode fxRates
+
+  return $ targetRate / baseRate
 
 getBtxType :: FinanciusTransaction -> BluecoinTransactionType
 getBtxType FinanciusTransaction {..}
