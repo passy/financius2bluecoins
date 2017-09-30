@@ -357,7 +357,7 @@ main = L.runStderrLoggingT $ do
   args :: Args                  <- getRecord "financius2bluecoin"
   financiusJson                 <- liftIO . readFile $ financiusFile args
   conn                          <- liftIO . SQL.open $ bluecoinFile args
-  fxLookup' :: Maybe FxLookup          <- traverse loadFxRates (eurofxrefFile args)
+  fxLookup' :: Maybe FxLookup   <- traverse loadFxRates (eurofxrefFile args)
   fxLookup <- case fxLookup' of
         Just a -> pure a
         Nothing -> do
