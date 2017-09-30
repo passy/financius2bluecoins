@@ -593,7 +593,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       txId <- write (round $ fromIntegral amount / fxr) account account
       setTxPairId conn txId txId
       return [txId]
-    Double srcAccount destAccount -> if btxTransactionType /= BtxTransfer
+    Double srcAccount@(_, srcFx) destAccount@(_, destFx) -> if btxTransactionType /= BtxTransfer
       then do
         -- I know this is a very lazy way of handling this invariant.
         $(L.logError)
@@ -601,16 +601,9 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
           <> show btx
         return []
       else do
-        srcTxId  <- write (negate btxAmount) srcAccount destAccount
-        destTxId <- write
-          -- This `round` makes me uneasy, but I think it should be the right thing here as it's only used
-          -- to approximate the amount to cents / pence.
-          (round ((fromIntegral btxAmount) * btxConversionRate))
-          -- We need to match up the fx rate we set in the transfer transaction with
-          -- the one we use for the amount calculation or we're in trouble.
-          ((const btxConversionRate) <$> destAccount)
-          ((const btxConversionRate) <$> srcAccount)
-        setTxPairId conn srcTxId  destTxId
+        srcTxId  <- write (negate . round $ fromIntegral btxAmount / srcFx) srcAccount destAccount
+        destTxId <- write (round $ fromIntegral btxAmount * btxConversionRate / destFx) destAccount srcAccount
+        setTxPairId conn srcTxId destTxId
         setTxPairId conn destTxId srcTxId
         return [srcTxId, destTxId]
 
@@ -639,7 +632,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":categoryID" := btxCategoryId
       , ":hasPhoto" := (0 :: Int)
       , ":labelCount" := length btxLabels
-      , ":conversionRateNew" := (chooseSignificant btxConversionRate srcFx)
+      , ":conversionRateNew" := srcFx
       , ":transactionTypeID" := fromEnum btxTransactionType
       , ":uidPairID" := (-1 :: Int)
       , ":accountID" := baccId srcAccount
@@ -651,13 +644,6 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":tags" := ("temptags" :: Text)
       ]
     liftIO $ RowId <$> SQL.lastInsertRowId conn
-
--- | Given two doubles, pick the one that deviates the most from 1.0.
-chooseSignificant :: Double -> Double -> Double
-chooseSignificant a b =
-  let ad = abs $ 1.0 - a
-      bd = abs $ 1.0 - b
-  in if ad > bd then a else b
 
 writeBluecoinLabel
   :: (MonadIO io, L.MonadLogger io) => SQL.Connection -> Text -> RowId -> io ()
