@@ -117,9 +117,9 @@ instance Enum FxDate where
 instance Hashable.Hashable FxDate where
   hash (FxDate d) =
     let (x, y, z) = Calendar.toGregorian d
-    in fromIntegral $ (32 * x + 32 * fromIntegral y + 32 * fromIntegral z)
+    in fromIntegral $ 32 * x + 32 * fromIntegral y + 32 * fromIntegral z
 
-  hashWithSalt salt v = (Hashable.hash v) * salt
+  hashWithSalt salt v = Hashable.hash v * salt
 
 -- | A fx rate record for a given day, based on the ECB CSV data.
 data FxRecord = FxRecord
@@ -145,7 +145,7 @@ instance Csv.FromField FxDate where
 
 instance Csv.FromNamedRecord FxRecord where
   parseNamedRecord v =
-    FxRecord <$> (v Csv..: "Date") <*> (eitherToParser $ parseFxRatesTable v)
+    FxRecord <$> (v Csv..: "Date") <*> eitherToParser (parseFxRatesTable v)
 
 eitherToParser :: Either Text b -> Csv.Parser b
 eitherToParser (Left _) = mempty
