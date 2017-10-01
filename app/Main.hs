@@ -55,6 +55,7 @@ newAccountCategory = BluecoinCategory (RowId 2) "(New Account)"
 data Args = Args
   { financiusFile :: FilePath
   , bluecoinFile :: FilePath
+  , baseCurrency :: Text
   , eurofxrefFile :: Maybe FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
@@ -105,6 +106,9 @@ data FinanciusTag = FinanciusTag
 
 newtype FxDate = FxDate Calendar.Day
   deriving (Eq, Show, Ord)
+
+newtype CurrencyCode = CurrencyCode Text
+  deriving (Show)
 
 instance Enum FxDate where
   toEnum = FxDate . toEnum
@@ -392,6 +396,7 @@ main = L.runStderrLoggingT $ do
 
   let transactions =
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
+  let baseCurrencyCode = CurrencyCode $ baseCurrency args
 
   maybeFtxs :: V.Vector (Maybe FinanciusTransaction) <-
     forM transactions $ \tx -> case Aeson.fromJSON tx of
@@ -409,6 +414,7 @@ main = L.runStderrLoggingT $ do
               m
               ( runMaybeT
               . mkBluecoinTransaction conn
+                                      baseCurrencyCode
                                       mergedAccounts
                                       mergedCategories
                                       fTags
@@ -500,13 +506,14 @@ getBtxAccount baccs FinanciusTransaction {..} = case ftxTransactionType of
 mkBluecoinTransaction
   :: (MonadIO io, L.MonadLogger io)
   => SQL.Connection
+  -> CurrencyCode
   -> HMS.HashMap Text BluecoinAccount
   -> HMS.HashMap Text BluecoinCategory
   -> HMS.HashMap Text FinanciusTag
   -> FxLookup
   -> FinanciusTransaction
   -> MaybeT io BluecoinTransaction
-mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {..} = do
+mkBluecoinTransaction conn baseCurrencyCode baccs bcats ftags fxlookup ftx@FinanciusTransaction {..} = do
   let itemName = if T.null ftxNote then "(Unnamed transaction)" else ftxNote
   btxItemId :: RowId <- getOrCreateItem conn itemName
   let btxNotes  = "passyImportId:" <> ftxId
@@ -520,7 +527,7 @@ mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {
 
   btxAccount' <- getBtxAccount baccs ftx
   let taggedAccount :: TransactionBundle (BluecoinAccount, Maybe FxRecord) = flip (,) dailyFxRate <$> btxAccount'
-  btxAccount :: TransactionBundle (BluecoinAccount, Double) <- traverse mergeAccountRates taggedAccount
+  btxAccount :: TransactionBundle (BluecoinAccount, Double) <- traverse (mergeAccountRates baseCurrencyCode) taggedAccount
 
   btxCategoryId <- MaybeT . pure $ getBtxCategoryId bcats ftx
 
@@ -528,10 +535,11 @@ mkBluecoinTransaction conn baccs bcats ftags fxlookup ftx@FinanciusTransaction {
 
 mergeAccountRates
   :: L.MonadLogger m
-  => (BluecoinAccount, Maybe FxRecord)
+  => CurrencyCode
+  -> (BluecoinAccount, Maybe FxRecord)
   -> m (BluecoinAccount, Double)
-mergeAccountRates (bacc, mfxr) = do
-  let rate = mfxr >>= fxRateForCurrency bacc
+mergeAccountRates baseCurrencyCode (bacc, mfxr) = do
+  let rate = mfxr >>= fxRateForCurrency baseCurrencyCode bacc
   case rate of
     Just r -> return (bacc, r)
     Nothing -> do
@@ -540,12 +548,13 @@ mergeAccountRates (bacc, mfxr) = do
 
 -- | This is rather silly. A Map with header values would be much better.
 fxRateForCurrency
-  :: BluecoinAccount
+  :: CurrencyCode
+  -> BluecoinAccount
   -> FxRecord
   -> Maybe Double
-fxRateForCurrency BluecoinAccount{baccCurrencyCode} FxRecord{..} = do
+fxRateForCurrency (CurrencyCode baseCurrencyCode) BluecoinAccount{baccCurrencyCode} FxRecord{..} = do
   -- TODO: Don't hardcode base rate.
-  baseRate <- HMS.lookup "GBP" fxRates
+  baseRate <- HMS.lookup baseCurrencyCode fxRates
   targetRate <- if baccCurrencyCode == "EUR" then Just 1.0 else HMS.lookup baccCurrencyCode fxRates
 
   return $ targetRate / baseRate
