@@ -33,7 +33,7 @@ Also, ensure that the base currency is set correctly.
 Create a local backup via “Settings > Local Backup > Backup to phone storage” and download it,
 for instance via Dropbox.
 
-<img src="assets/screenshot_bluecoins_backup.png" width="320">
+<img src="assets/screenshot_bluecoins_backup.png" width="160">
 
 **Step 3**
 
