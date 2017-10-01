@@ -17,6 +17,7 @@ As I said, this isn't exactly optimized for ease of use.
 Create and download a backup from Financius.
 
 <img src="assets/screenshot_financius_backup.png" width="320" align="right">
+<br style="clear: both">
 
 Download the resulting JSON file and take note of its location.
 
@@ -34,6 +35,7 @@ Create a local backup via â€œSettings > Local Backup > Backup to phone storageâ€
 for instance via Dropbox.
 
 <img src="assets/screenshot_bluecoins_backup.png" width="320" align="right">
+<br style="clear: both">
 
 **Step 3**
 
