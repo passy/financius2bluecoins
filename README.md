@@ -16,8 +16,7 @@ As I said, this isn't exactly optimized for ease of use.
 
 Create and download a backup from Financius.
 
-<img src="assets/screenshot_financius_backup.png" width="320" align="right">
-<br style="clear: both">
+<img src="assets/screenshot_financius_backup.png" width="160">
 
 Download the resulting JSON file and take note of its location.
 
@@ -34,8 +33,7 @@ Also, ensure that the base currency is set correctly.
 Create a local backup via “Settings > Local Backup > Backup to phone storage” and download it,
 for instance via Dropbox.
 
-<img src="assets/screenshot_bluecoins_backup.png" width="320" align="right">
-<br style="clear: both">
+<img src="assets/screenshot_bluecoins_backup.png" width="320">
 
 **Step 3**
 
