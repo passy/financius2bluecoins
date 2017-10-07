@@ -677,7 +677,7 @@ writeBluecoinTransaction conn btx@BluecoinTransaction {..} = do
       , ":transactionCurrency" := baccCurrencyCode srcAccount
       , ":accountReference" := (3 :: Int)
       , ":deletedTransaction" := (6 :: Int)
-      -- TODO
+      -- TODO: Is this relevant?
       , ":tags" := ("temptags" :: Text)
       ]
     liftIO $ RowId <$> SQL.lastInsertRowId conn
