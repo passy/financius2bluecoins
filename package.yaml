@@ -44,6 +44,7 @@ dependencies:
   - transformers
   - zip-archive
   - cassava
+  - optparse-applicative
 
 executables:
   financius2bluecoin:

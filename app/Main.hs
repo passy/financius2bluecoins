@@ -17,30 +17,31 @@ module Main where
 import Protolude
 import Data.Aeson.Lens
 import Control.Lens
-import Options.Generic (ParseRecord, getRecord)
+import Options.Generic (ParseRecord, ParseField(..), ParseFields, getRecord)
 import Data.Aeson ((.:), (.:?))
 import Database.SQLite.Simple (NamedParam((:=)))
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT), runMaybeT)
 import Control.Monad.Fail (fail)
 
-import qualified Data.Aeson as Aeson
-import qualified Data.String as String
-import qualified Data.ByteString.Lazy as BSL
-import qualified Data.Aeson.Types as Aeson
+import qualified Codec.Archive.Zip as Zip
 import qualified Control.Monad.Logger as L
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Csv as Csv
+import qualified Data.HashMap.Strict as HMS
+import qualified Data.Hashable as Hashable
+import qualified Data.String as String
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Read as TRead
+import qualified Data.Time.Calendar as Calendar
+import qualified Data.Time.Clock as Clock
+import qualified Data.Time.Clock.POSIX as PClock
 import qualified Data.Vector as V
 import qualified Database.SQLite.Simple as SQL
 import qualified Database.SQLite.Simple.ToField as SQL
-import qualified Data.HashMap.Strict as HMS
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.Time.Clock as Clock
-import qualified Data.Time.Clock.POSIX as PClock
-import qualified Data.Hashable as Hashable
-import qualified Codec.Archive.Zip as Zip
-import qualified Data.Csv as Csv
-import qualified Data.Time.Calendar as Calendar
-import qualified Data.Text.Read as TRead
+import qualified Options.Applicative as Options
 
 -- * Constants
 
@@ -50,12 +51,35 @@ transferCategory = BluecoinCategory (RowId 3) "(Transfer)"
 newAccountCategory :: BluecoinCategory
 newAccountCategory = BluecoinCategory (RowId 2) "(New Account)"
 
+-- * Parsing utils
+
+parseHelpfulString
+  :: String.String
+  -> Maybe Text
+  -> Maybe Text
+  -> Maybe Char
+  -> Options.Parser Text
+parseHelpfulString metavar h m c =
+    case m of
+        Nothing   -> do
+            let fs :: Options.Mod Options.ArgumentFields a
+                fs =  Options.metavar metavar
+                   <> foldMap (Options.help . T.unpack) h
+            Options.argument (T.pack <$> Options.str) fs
+        Just name -> do
+            let fs :: Options.Mod Options.OptionFields a
+                fs =  Options.metavar metavar
+                   <> Options.long (T.unpack name)
+                   <> foldMap (Options.help . T.unpack) h
+                   <> foldMap Options.short c
+            Options.option (T.pack <$> Options.str) fs
+
 -- * Definitions
 
 data Args = Args
   { financiusFile :: FilePath
   , bluecoinFile :: FilePath
-  , baseCurrency :: Text
+  , baseCurrency :: CurrencyCode
   , eurofxrefFile :: Maybe FilePath
   } deriving (Eq, Show, Generic, ParseRecord)
 
@@ -108,7 +132,12 @@ newtype FxDate = FxDate Calendar.Day
   deriving (Eq, Show, Ord)
 
 newtype CurrencyCode = CurrencyCode Text
-  deriving (Show)
+  deriving (Eq, Show, Generic, Typeable, ParseFields, ParseRecord)
+
+-- * Instances
+
+instance ParseField CurrencyCode where
+  parseField h m c = CurrencyCode <$> parseHelpfulString "CURRENCY_CODE" h m c
 
 instance Enum FxDate where
   toEnum = FxDate . toEnum
@@ -396,7 +425,6 @@ main = L.runStderrLoggingT $ do
 
   let transactions =
         fromMaybe V.empty $ financiusJson ^? key "transactions" . _Array
-  let baseCurrencyCode = CurrencyCode $ baseCurrency args
 
   maybeFtxs :: V.Vector (Maybe FinanciusTransaction) <-
     forM transactions $ \tx -> case Aeson.fromJSON tx of
@@ -414,7 +442,7 @@ main = L.runStderrLoggingT $ do
               m
               ( runMaybeT
               . mkBluecoinTransaction conn
-                                      baseCurrencyCode
+                                      (baseCurrency args)
                                       mergedAccounts
                                       mergedCategories
                                       fTags
