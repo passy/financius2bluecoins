@@ -83,7 +83,7 @@ of the missing “s”. PR welcome.)
 -	`eurofxrefFile` points to the download ECB data from step 4. If you don’t specify this, all
 exchange rates will be set to 1.0.
 
-NOTE: This will *override to the provided `--bluecoinsFile`*.
+**NOTE: This will overwrite to the provided `--bluecoinsFile` in a non-idempotent action!**
 
 **Step 6**
 
