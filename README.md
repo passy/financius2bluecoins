@@ -1,5 +1,7 @@
 # financius2bluecoins
 
+![](assets/logo.png)
+
 > Convert Financius backups to Bluecoins DBs.
 
 This is meant to be a one-off script, so please apologize the clunky UX and
