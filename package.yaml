@@ -33,8 +33,6 @@ dependencies:
   - lens-aeson
   - sqlite-simple
   - text
-  - bytestring
-  - containers
   - unordered-containers
   - optparse-generic
   - vector
